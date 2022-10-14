@@ -19,12 +19,16 @@ package org.apache.ignite.internal.sql.engine.exec.rel;
 
 import static org.apache.ignite.internal.util.ArrayUtils.nullOrEmpty;
 
+import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.Flow;
+import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -82,11 +86,13 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
     private Subscription activeSubscription;
 
-    private int curPartIdx;
+//    private int curPartIdx;
 
     private @Nullable BinaryTuple lowerBound;
 
     private @Nullable BinaryTuple upperBound;
+
+    private Comparator<RowT> cmp;
 
     /**
      * Constructor.
@@ -105,6 +111,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             IgniteIndex schemaIndex,
             InternalIgniteTable schemaTable,
             int[] parts,
+            Comparator<RowT> cmp,
             @Nullable Supplier<RowT> lowerCond,
             @Nullable Supplier<RowT> upperCond,
             @Nullable Predicate<RowT> filters,
@@ -128,6 +135,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
         // TODO: create ticket to add flags support
         flags = SortedIndex.INCLUDE_LEFT & SortedIndex.INCLUDE_RIGHT;
+        this.cmp = cmp;
     }
 
     /** {@inheritDoc} */
@@ -161,7 +169,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
     protected void rewindInternal() {
         requested = 0;
         waiting = 0;
-        curPartIdx = 0;
+//        curPartIdx = 0;
         lowerBound = null;
         upperBound = null;
 
@@ -229,10 +237,14 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
         }
     }
 
+    private boolean processed = false;
+
     private void requestNextBatch() {
         if (waiting == NOT_WAITING) {
             return;
         }
+
+        System.out.println("request next");
 
         if (waiting == 0) {
             // we must not request rows more than inBufSize
@@ -242,7 +254,25 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
         Subscription subscription = this.activeSubscription;
         if (subscription != null) {
             subscription.request(waiting);
-        } else if (curPartIdx < parts.length) {
+
+            waiting = NOT_WAITING;
+
+            return;
+        }
+
+        if (processed) {
+            waiting = NOT_WAITING;
+
+            processed = false;
+
+            return;
+        }
+
+        CompositePublisher publisher = new CompositePublisher();
+
+        for (int curPartIdx = 0; curPartIdx < parts.length; curPartIdx++) {
+
+//        else if (curPartIdx < parts.length) {
             if (schemaIndex.type() == Type.SORTED) {
                 //TODO: https://issues.apache.org/jira/browse/IGNITE-17813
                 // Introduce new publisher using merge-sort algo to merge partition index publishers.
@@ -251,14 +281,14 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
                     upperBound = toBinaryTuplePrefix(upperCond);
                 }
 
-                ((SortedIndex) schemaIndex.index()).scan(
-                        parts[curPartIdx++],
+                publisher.add(((SortedIndex) schemaIndex.index()).scan(
+                        parts[curPartIdx],
                         context().transaction(),
                         lowerBound,
                         upperBound,
                         flags,
                         requiredColumns
-                ).subscribe(new SubscriberImpl());
+                ));
             } else {
                 assert schemaIndex.type() == Type.HASH;
                 assert lowerCond == upperCond;
@@ -267,17 +297,175 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
                     lowerBound = toBinaryTuple(lowerCond);
                 }
 
-                schemaIndex.index().scan(
-                        parts[curPartIdx++],
-                        context().transaction(),
-                        lowerBound,
-                        requiredColumns
-                ).subscribe(new SubscriberImpl());
+                publisher.add(
+                        schemaIndex.index().scan(
+                                parts[curPartIdx],
+                                context().transaction(),
+                                lowerBound,
+                                requiredColumns
+                        ));
             }
-        } else {
-            waiting = NOT_WAITING;
+        }
+
+        processed = true;
+
+        publisher.subscribe(new SubscriberImpl());
+//        } else {
+//            waiting = NOT_WAITING;
+//        }
+    }
+
+    class MagicSubscriber<T> implements Flow.Subscriber<T> {
+
+        private final Subscriber<T> delegate;
+
+        private final int idx;
+
+        private final CompositeSubscription compSubscription;
+
+        // todo
+        private Subscription subscription;
+
+        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription compSubscription) {
+            assert delegate != null;
+
+            this.delegate = delegate;
+            this.idx = idx;
+            this.compSubscription = compSubscription;
+        }
+
+        @Override
+        public void onSubscribe(Subscription subscription) {
+            compSubscription.add(this.subscription = subscription);
+        }
+
+        @Override
+        public void onNext(T item) {
+            // todo MAGIC
+            delegate.onNext(item);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            // todo sync properly
+            if (complete())
+                delegate.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            // todo sync properly
+            if (complete()) {
+                System.out.println(">xxx> completed");
+                delegate.onComplete();
+            }
+        }
+
+        boolean complete() {
+            return compSubscription.remove(subscription) && compSubscription.subscriptions().isEmpty();
         }
     }
+
+    private class CompositePublisher implements Flow.Publisher<BinaryTuple> {
+
+        List<Flow.Publisher<BinaryTuple>> publishers = new ArrayList<>();
+
+        CompositeSubscription compSubscription = new CompositeSubscription();
+
+//        List<Flow.Subscriber<? super BinaryTuple>> susbcribers = new ArrayList<>();
+
+        AtomicBoolean subscribed = new AtomicBoolean();
+
+//        Flow.Subscriber<? super BinaryTuple> finalSubscriber;
+
+        public void add(Flow.Publisher<BinaryTuple> publisher) {
+            publishers.add(publisher);
+        }
+
+//        CompositeSubscriber compSubscr = new CompositeSubscriber();
+
+        @Override
+        public void subscribe(Subscriber<? super BinaryTuple> subscriber) {
+            // todo sync
+            if (!subscribed.compareAndSet(false, true))
+                throw new IllegalStateException("Support only one subscriber");
+
+            for (int i = 0; i < publishers.size(); i++) {
+                publishers.get(i).subscribe(new MagicSubscriber<>(subscriber, i, compSubscription));
+            }
+
+            subscriber.onSubscribe(compSubscription);
+        }
+    }
+
+    private class CompositeSubscription implements Flow.Subscription {
+
+        private List<Flow.Subscription> subscriptions = new ArrayList<>();
+
+        public List<Flow.Subscription> subscriptions() {
+            return subscriptions;
+        }
+
+        public void add(Flow.Subscription subscription) {
+            subscriptions.add(subscription);
+        }
+
+        // todo sync
+        public boolean remove(Flow.Subscription subscription) {
+            return subscriptions.remove(subscription);
+        }
+
+        @Override
+        public void request(long n) {
+            // todo sync
+            for (Flow.Subscription subscription : subscriptions) {
+                subscription.request(n);
+            }
+        }
+
+        @Override
+        public void cancel() {
+            // todo sync
+            for (Flow.Subscription subscription : subscriptions) {
+                subscription.cancel();
+            }
+        }
+    }
+//
+//    private class CompositeSubscriber implements Flow.Subscriber<BinaryTuple> {
+//
+//        List<Flow.Subscriber<? super BinaryTuple>> susbcribers = new ArrayList<>();
+//
+//        CompositeSubscription compSubscription = new CompositeSubscription();
+//
+//        public void add(Subscriber<? super BinaryTuple> subscriber) {
+//            susbcribers.add(subscriber);
+//        }
+//
+//        List<Flow.Subscriber<? super BinaryTuple>> subscribers() {
+//            return susbcribers;
+//        }
+//
+//        @Override
+//        public void onSubscribe(Subscription subscription) {
+//            compSubscription.add(subscription);
+//        }
+//
+//        @Override
+//        public void onNext(BinaryTuple item) {
+//
+//        }
+//
+//        @Override
+//        public void onError(Throwable throwable) {
+//
+//        }
+//
+//        @Override
+//        public void onComplete() {
+//
+//        }
+//    }
 
     private class SubscriberImpl implements Flow.Subscriber<BinaryTuple> {
 

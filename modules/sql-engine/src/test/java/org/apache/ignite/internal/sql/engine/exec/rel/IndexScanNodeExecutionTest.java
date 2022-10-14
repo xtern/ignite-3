@@ -20,13 +20,16 @@ package org.apache.ignite.internal.sql.engine.exec.rel;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.IsEqual.equalTo;
 
+import it.unimi.dsi.fastutil.longs.LongComparator;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
+import jdk.dynalink.linker.ConversionComparator.Comparison;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory.Builder;
 import org.apache.ignite.internal.binarytuple.BinaryTupleBuilder;
@@ -70,23 +73,29 @@ public class IndexScanNodeExecutionTest extends AbstractExecutionTest {
         );
 
         Object[][] tableData = {
+                // 1st partition
                 {1L, null, 1, "Roman"},
-                {2L, 4, 2, "Igor"},
                 {3L, 3, 1, "Taras"},
+                {6L, 2, 1, "Andrey"},
+                // 2nd partition
+                {2L, 4, 2, "Igor"},
                 {4L, 2, null, "Alexey"},
                 {5L, 4, 1, "Ivan"},
-                {6L, 2, 1, "Andrey"}
         };
 
-        // TODO: sort data, once IndexScanNode will support merging.
-        Object[][] result = tableData;
+        Object[][] expected = Arrays.stream(tableData).map(Object[]::clone).toArray(Object[][]::new);
+
+        Arrays.sort(expected, Comparator.comparingLong(v -> (long)((Object[])v)[0]));
+
+        // todo
+        expected = tableData;
 
         // Validate sort order.
         validateSortedIndexScan(
                 tableData,
                 null,
                 null,
-                result
+                expected
         );
 
         // Validate bounds.
@@ -94,14 +103,14 @@ public class IndexScanNodeExecutionTest extends AbstractExecutionTest {
                 tableData,
                 () -> new Object[]{2, 1},
                 () -> new Object[]{3, 0},
-                result
+                expected
         );
 
         validateSortedIndexScan(
                 tableData,
                 () -> new Object[]{2, 1},
                 () -> new Object[]{4},
-                result
+                expected
 
         );
 
@@ -109,7 +118,7 @@ public class IndexScanNodeExecutionTest extends AbstractExecutionTest {
                 tableData,
                 () -> new Object[]{null},
                 null,
-                result
+                expected
         );
 
         // Validate failure due to incorrect bounds.
@@ -272,12 +281,16 @@ public class IndexScanNodeExecutionTest extends AbstractExecutionTest {
 
         RelDataType rowType = createRowTypeFromSchema(ectx.getTypeFactory(), schemaDescriptor);
 
+//        cmp = ectx.expressionFactory().comparator(rowType.getCollation());
+        Comparator<Object[]> cmp = Comparator.comparingLong(v -> (long)((Object[])v)[0]);
+
         IndexScanNode<Object[]> scanNode = new IndexScanNode<>(
                 ectx,
                 rowType,
                 index,
                 new TestTable(rowType),
                 new int[]{0, 2},
+                cmp,
                 lowerBound,
                 upperBound,
                 null,

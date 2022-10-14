@@ -304,7 +304,9 @@ public class LogicalRelImplementor<RowT> implements IgniteRelVisitor<Node<RowT>>
         ColocationGroup group = ctx.group(rel.sourceId());
         int[] parts = group.partitions(ctx.localNodeId());
 
-        return new IndexScanNode<>(ctx, rowType, idx, tbl, parts, lower, upper, filters, prj, requiredColumns.toBitSet());
+        Comparator<RowT> cmp = expressionFactory.comparator(rel.collation());
+
+        return new IndexScanNode<>(ctx, rowType, idx, tbl, parts, cmp, lower, upper, filters, prj, requiredColumns.toBitSet());
     }
 
     /** {@inheritDoc} */
