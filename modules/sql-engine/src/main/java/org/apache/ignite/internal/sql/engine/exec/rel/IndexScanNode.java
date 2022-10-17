@@ -19,16 +19,13 @@ package org.apache.ignite.internal.sql.engine.exec.rel;
 
 import static org.apache.ignite.internal.util.ArrayUtils.nullOrEmpty;
 
-import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.Flow;
-import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -42,6 +39,7 @@ import org.apache.ignite.internal.sql.engine.exec.RowHandler;
 import org.apache.ignite.internal.sql.engine.schema.IgniteIndex;
 import org.apache.ignite.internal.sql.engine.schema.IgniteIndex.Type;
 import org.apache.ignite.internal.sql.engine.schema.InternalIgniteTable;
+import org.apache.ignite.internal.sql.engine.util.CompositePublisher;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.Nullable;
 
@@ -314,158 +312,6 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 //            waiting = NOT_WAITING;
 //        }
     }
-
-    class MagicSubscriber<T> implements Flow.Subscriber<T> {
-
-        private final Subscriber<T> delegate;
-
-        private final int idx;
-
-        private final CompositeSubscription compSubscription;
-
-        // todo
-        private Subscription subscription;
-
-        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription compSubscription) {
-            assert delegate != null;
-
-            this.delegate = delegate;
-            this.idx = idx;
-            this.compSubscription = compSubscription;
-        }
-
-        @Override
-        public void onSubscribe(Subscription subscription) {
-            compSubscription.add(this.subscription = subscription);
-        }
-
-        @Override
-        public void onNext(T item) {
-            // todo MAGIC
-            delegate.onNext(item);
-        }
-
-        @Override
-        public void onError(Throwable throwable) {
-            // todo sync properly
-            if (complete())
-                delegate.onError(throwable);
-        }
-
-        @Override
-        public void onComplete() {
-            // todo sync properly
-            if (complete()) {
-                System.out.println(">xxx> completed");
-                delegate.onComplete();
-            }
-        }
-
-        boolean complete() {
-            return compSubscription.remove(subscription) && compSubscription.subscriptions().isEmpty();
-        }
-    }
-
-    private class CompositePublisher implements Flow.Publisher<BinaryTuple> {
-
-        List<Flow.Publisher<BinaryTuple>> publishers = new ArrayList<>();
-
-        CompositeSubscription compSubscription = new CompositeSubscription();
-
-//        List<Flow.Subscriber<? super BinaryTuple>> susbcribers = new ArrayList<>();
-
-        AtomicBoolean subscribed = new AtomicBoolean();
-
-//        Flow.Subscriber<? super BinaryTuple> finalSubscriber;
-
-        public void add(Flow.Publisher<BinaryTuple> publisher) {
-            publishers.add(publisher);
-        }
-
-//        CompositeSubscriber compSubscr = new CompositeSubscriber();
-
-        @Override
-        public void subscribe(Subscriber<? super BinaryTuple> subscriber) {
-            // todo sync
-            if (!subscribed.compareAndSet(false, true))
-                throw new IllegalStateException("Support only one subscriber");
-
-            for (int i = 0; i < publishers.size(); i++) {
-                publishers.get(i).subscribe(new MagicSubscriber<>(subscriber, i, compSubscription));
-            }
-
-            subscriber.onSubscribe(compSubscription);
-        }
-    }
-
-    private class CompositeSubscription implements Flow.Subscription {
-
-        private List<Flow.Subscription> subscriptions = new ArrayList<>();
-
-        public List<Flow.Subscription> subscriptions() {
-            return subscriptions;
-        }
-
-        public void add(Flow.Subscription subscription) {
-            subscriptions.add(subscription);
-        }
-
-        // todo sync
-        public boolean remove(Flow.Subscription subscription) {
-            return subscriptions.remove(subscription);
-        }
-
-        @Override
-        public void request(long n) {
-            // todo sync
-            for (Flow.Subscription subscription : subscriptions) {
-                subscription.request(n);
-            }
-        }
-
-        @Override
-        public void cancel() {
-            // todo sync
-            for (Flow.Subscription subscription : subscriptions) {
-                subscription.cancel();
-            }
-        }
-    }
-//
-//    private class CompositeSubscriber implements Flow.Subscriber<BinaryTuple> {
-//
-//        List<Flow.Subscriber<? super BinaryTuple>> susbcribers = new ArrayList<>();
-//
-//        CompositeSubscription compSubscription = new CompositeSubscription();
-//
-//        public void add(Subscriber<? super BinaryTuple> subscriber) {
-//            susbcribers.add(subscriber);
-//        }
-//
-//        List<Flow.Subscriber<? super BinaryTuple>> subscribers() {
-//            return susbcribers;
-//        }
-//
-//        @Override
-//        public void onSubscribe(Subscription subscription) {
-//            compSubscription.add(subscription);
-//        }
-//
-//        @Override
-//        public void onNext(BinaryTuple item) {
-//
-//        }
-//
-//        @Override
-//        public void onError(Throwable throwable) {
-//
-//        }
-//
-//        @Override
-//        public void onComplete() {
-//
-//        }
-//    }
 
     private class SubscriberImpl implements Flow.Subscriber<BinaryTuple> {
 
