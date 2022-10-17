@@ -19,56 +19,207 @@ package org.apache.ignite.internal.sql.engine.util;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
-import java.util.concurrent.LinkedBlockingDeque;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.locationtech.jts.util.Assert;
 
 public class CompositePublisherTest {
-    static class MegaAcceptor {
+    static class MegaAcceptor<T> {
         private final Object[] recentRows;
+        private final Consumer<T> finalConsumer;
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Comparator<T> cmp;
+        private final Set<Integer> finished = new HashSet<>();
 
-        private final Consumer<Object> finalConsumer;
+        private int minIdx = -1;
 
-        MegaAcceptor(Object[] recentRows, Consumer<Object> finalConsumer) {
-            this.recentRows = recentRows;
+        MegaAcceptor(int threadCnt, Consumer<T> finalConsumer, Comparator<T> cmp) {
+            this.recentRows = new Object[threadCnt];
             this.finalConsumer = finalConsumer;
+            this.cmp = cmp;
         }
 
-//        @Override
-        public void accept(Object o, int idx) {
-            finalConsumer.accept(o);
+        private T minValue(int idx) throws InterruptedException {
+            int minIdx0 = 0;
+
+            // If the only one left.
+            if (finished.size() == recentRows.length - 1) {
+                for (int n = 0; n < recentRows.length; n++) {
+                    if (!finished.contains(n)) {
+                        minIdx = n;
+
+                        if (minIdx != idx)
+                            return null;
+
+                        Object minVal = recentRows[minIdx];
+
+                        recentRows[minIdx] = null;
+
+                        return (T)minVal;
+                    }
+                }
+            }
+
+            for (int n = 0; n < recentRows.length; n++) {
+                Object obj = recentRows[n];
+
+                if (obj == null) {
+                    if (finished.contains(n)) {
+                        if (minIdx0 == n)
+                            minIdx0 = n + 1;
+
+                        continue;
+                    }
+
+                    minIdx = -1;
+
+                    return null;
+                }
+
+                T val = (T)obj;
+
+                if (cmp.compare((T)recentRows[minIdx0], val) > 0)
+                    minIdx0 = n;
+            }
+
+            minIdx = minIdx0;
+
+            if (minIdx0 != idx) {
+                notifyAll();
+
+                return null;
+            }
+
+            Object minVal = recentRows[minIdx0];
+
+            recentRows[minIdx] = null;
+
+            return (T)minVal;
+        }
+
+        public synchronized void accept(T o, int idx) {
+//            System.out.println(">xxx> " + Arrays.toString(recentRows) + " v=" + o + " idx = " + idx + ", minIdx = " + minIdx);
+//            lock.lock();
+//
+            try {
+                while (recentRows[idx] != null && idx != minIdx) {
+//                    System.out.println(">xxx> sleep on " + o);
+
+                    wait();
+                }
+
+//                System.out.println(">xxx> wake-up " + o);
+
+                if (o == null) {
+                    finished.add(idx);
+
+                    assert minIdx == idx;
+
+                    if (recentRows[idx] != null) {
+                        T v = (T)recentRows[idx];
+
+                        recentRows[idx] = null;
+
+                        finalConsumer.accept(v);
+                    }
+
+                    T v = minValue(idx);
+
+//                    System.out.println("ret = " + v + ", minIdx=" + minIdx + " idx=" + idx + ", recentRows[idx]=" + recentRows[idx]);
+
+                    notifyAll();
+
+                    assert minIdx != idx;
+
+//                    if (recentRows[idx] != null) {
+//                        v = (T)recentRows[idx];
+//
+//                        recentRows[idx] = null;
+//
+//                        finalConsumer.accept(v);
+//                    } else {
+//                        if (minIdx == idx && v != null) {
+//                            minIdx = -1;
+//
+//                            finalConsumer.accept(v);
+//                        }
+//                    }
+
+//                    if (v != null)
+//                        finalConsumer.accept(v);
+
+                    return;
+                }
+
+                if (minIdx == idx && recentRows[idx] != null)
+                    finalConsumer.accept((T)recentRows[idx]);
+//                    lock.newCondition()
+
+                if (minIdx == -1)
+                    minIdx = idx;
+
+                recentRows[idx] = o;
+
+                T v = minValue(idx);
+
+                if (v != null)
+                    finalConsumer.accept(v);
+            }
+            catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            finally {
+//                lock.unlock();
+            }
+
         }
     }
 
-    static class DataStreamer implements Runnable {
-
+    static class TestDataStreamer implements Runnable {
         private final int[] data;
-
-        private final MegaAcceptor consumer;
         private final int idx;
+        private final MegaAcceptor<Integer> consumer;
+        private final CyclicBarrier startBarrier;
 
-        public DataStreamer(int idx, int[] data, MegaAcceptor consumer) {
+        public TestDataStreamer(CyclicBarrier startBarrier, int idx, int[] data, MegaAcceptor<Integer> consumer) {
             this.idx = idx;
             this.data = data;
             this.consumer = consumer;
+            this.startBarrier = startBarrier;
         }
 
         @Override
         public void run() {
-            for (int i = 0; i < data.length; i++)
-                consumer.accept(data[i], idx);
+            try {
+                startBarrier.await();
+
+                for (int i = 0; i < data.length; i++)
+                    consumer.accept(data[i], idx);
+
+//                System.out.println(">xxx> finished " + idx);
+
+                consumer.accept(null, idx);
+            } catch (InterruptedException | BrokenBarrierException e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 
     @Test
     public void testPublisher() throws InterruptedException {
-        int dataCnt = 10;
-        int threadCnt = 3;
+        int dataCnt = 1_000;
+        int threadCnt = 8;
         int[] data = new int[dataCnt * threadCnt];
 
 
@@ -76,36 +227,41 @@ public class CompositePublisherTest {
             data[i] = ThreadLocalRandom.current().nextInt();
 
         Thread[] threads = new Thread[threadCnt];
+        Queue<Object> resQueue = new LinkedBlockingQueue<>();
+        MegaAcceptor<Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
+//            System.out.println(">xxx> submit " + v);
 
-//        LinkedBlockingQueue<Object> queue = new LinkedBlockingQueue<>();
-        List<Object> list = new ArrayList<>();
+            resQueue.add(v);
+        }, Comparator.comparingInt(v -> v));
 
-        MegaAcceptor acceptor = new MegaAcceptor(null, list::add);
+        CyclicBarrier startBarrier = new CyclicBarrier(threadCnt);
 
         for (int n = 0; n < threadCnt; n++) {
-            threads[n] = new Thread(new DataStreamer(n, Arrays.copyOfRange(data, n * dataCnt, (n + 1) * dataCnt), acceptor));
+            int[] arrCp = Arrays.copyOfRange(data, n * dataCnt, (n + 1) * dataCnt);
+
+            Arrays.sort(arrCp);
+
+            threads[n] = new Thread(new TestDataStreamer(startBarrier, n, arrCp, acceptor));
         }
 
-        for (int n = 0; n < threadCnt; n++) {
+        for (int n = 0; n < threadCnt; n++)
             threads[n].start();
-        }
 
-        for (int n = 0; n < threadCnt; n++) {
+        for (int n = 0; n < threadCnt; n++)
             threads[n].join();
-        }
 
         Arrays.sort(data);
 
-        int[] actData = new int[dataCnt * threadCnt];
-
-        int n = 0;
-
-        for (Object obj : list) {
-            actData[n++] = (int)obj;
+        int[] actData = new int[data.length];
+        int cnt = 0;
+        for (Object obj : resQueue) {
+            actData[cnt++] = (int)obj;
         }
 
-//        List<Object> list = new ArrayList<>(queue);
+//        List<Integer> expList = Arrays.stream(data)
+//                .boxed()
+//                .collect(Collectors.toList());
 
-        Assertions.assertArrayEquals(data, actData);
+        Assertions.assertArrayEquals(data, actData, Arrays.toString(data) + "\n" + Arrays.toString(actData));
     }
 }
