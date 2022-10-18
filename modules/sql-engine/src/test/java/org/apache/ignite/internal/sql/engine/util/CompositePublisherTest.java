@@ -17,6 +17,8 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -51,13 +53,19 @@ public class CompositePublisherTest {
 
             @Override
             public void request(long n) {
+                System.out.println(">xxx> request " + n);
+
                 CompletableFuture.supplyAsync(() -> {
                     int startIdx = idx;
                     int endIdx = Math.min(idx + (int)n, data.length);
 
+                    System.out.println(">xxx> push " + Arrays.toString(Arrays.copyOfRange(data, startIdx, endIdx)));
+
                     for (int n0 = startIdx; n0 < endIdx; n0++) {
                         subscriber.onNext(data[n0]);
                     }
+
+                    idx = endIdx;
 
 //                    if (endIdx == data.length)
                     subscriber.onComplete();
@@ -85,6 +93,7 @@ public class CompositePublisherTest {
     @Test
     public void testPublisher() throws InterruptedException {
         int dataCnt = 10;
+        int requestCnt = 10;
         int threadCnt = 3;
         int totalCnt = threadCnt * dataCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
@@ -109,7 +118,7 @@ public class CompositePublisherTest {
 //        int[] res = new int[threadCnt * dataCnt];
         LinkedBlockingQueue<Integer> res = new LinkedBlockingQueue<>();
 
-        CompositePublisher<Integer> publisher = new CompositePublisher<>(comp);
+        CompositePublisher<Integer> publisher = new CompositePublisher<>(Comparator.comparingInt(v -> v));
 
         for (int i = 0; i < threadCnt; i++) {
             publisher.add(new TestPublisher<>(data[i]));
@@ -120,7 +129,7 @@ public class CompositePublisherTest {
         publisher.subscribe(new Subscriber<>() {
                 @Override
                 public void onSubscribe(Subscription subscription) {
-                    subscription.request(100);
+                    subscription.request(requestCnt);
                 }
 
                 @Override
@@ -143,16 +152,21 @@ public class CompositePublisherTest {
                 }
         });
 
-        finishLatch.await(10, TimeUnit.SECONDS);
+        if (!finishLatch.await(10, TimeUnit.SECONDS))
+            fail("Execution timeout");
 
-        int[] resArr = new int[threadCnt * dataCnt];
+        int[] resArr = new int[requestCnt];
 
         k = 0;
 
-        for (Integer n : res)
-            resArr[k++] = n;
+        for (Integer n : res) {
+            if (resArr.length == k)
+                break;
 
-        Assertions.assertArrayEquals(expData, resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
+            resArr[k++] = n;
+        }
+
+        Assertions.assertArrayEquals(Arrays.copyOf(expData, requestCnt), resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
 
 //        if (true)
 //            return;

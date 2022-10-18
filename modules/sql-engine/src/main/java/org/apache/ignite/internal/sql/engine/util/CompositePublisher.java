@@ -17,13 +17,17 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
+import static org.apache.calcite.jdbc.CalcitePrepare.Dummy.peek;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.PriorityQueue;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -36,10 +40,14 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
     private final Comparator<T> comp;
 
+    private final PriorityBlockingQueue<T> queue;
+
     public CompositePublisher(Comparator<T> comp) {
         this.comp = comp;
 
-        compSubscription = new CompositeSubscription<>(comp);
+        this.queue = new PriorityBlockingQueue<>(1, comp);
+
+        compSubscription = new CompositeSubscription<>(comp, queue);
     }
 
     public void add(Publisher<T> publisher) {
@@ -54,7 +62,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
         }
 
         for (int i = 0; i < publishers.size(); i++) {
-            publishers.get(i).subscribe(new MagicSubscriber<>(subscriber, i, compSubscription));
+            MagicSubscriber<? super T> subs = new MagicSubscriber<>((Subscriber<T>) subscriber, i, compSubscription, queue);
+
+            publishers.get(i).subscribe(subs);
         }
 
         subscriber.onSubscribe(compSubscription);
@@ -66,25 +76,27 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
         private final int idx;
 
         private final CompositeSubscription<T> compSubscription;
+        private final PriorityBlockingQueue<T> queue;
 
-        private List<T> inBuf = new ArrayList<>();
+//        private List<T> inBuf = new ArrayList<>();
 
         // todo
         private Subscription subscription;
 
-        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription) {
+        private volatile T lastItem;
+
+        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
             assert delegate != null;
 
             this.delegate = delegate;
             this.idx = idx;
             this.compSubscription = compSubscription;
+            this.queue = queue;
         }
 
         private T lastItem() {
-            if (!inBuf.isEmpty())
-                return inBuf.get(inBuf.size() - 1);
 
-            return null;
+            return lastItem;
         }
 
         @Override
@@ -94,8 +106,11 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         @Override
         public void onNext(T item) {
-            // todo MAGIC
-            delegate.onNext(item);
+            // todo optimize
+            lastItem = item;
+
+            queue.add(item);
+            //delegate.onNext(item);
         }
 
         @Override
@@ -119,6 +134,37 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 //            }
         }
 
+        public long pushQueue(long remain) {
+            boolean done = false;
+            int pushedCnt = 0;
+
+            while (remain > 0) {
+                T r = queue.peek();
+
+                if (!done) {
+                    delegate.onNext(queue.poll());
+
+                    --remain;
+                }
+
+                if (lastItem == r) {
+                    done = true;
+
+                    delegate.onNext(queue.poll());
+
+                    --remain;
+                }
+                else
+                    if (done)
+                        break;
+            }
+
+            if (remain == 0)
+                delegate.onComplete();
+
+            return remain;
+        }
+
         boolean complete() {
             return compSubscription.remove(subscription) && compSubscription.subscriptions().isEmpty();
         }
@@ -128,35 +174,62 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private final Comparator<T> comp;
 
+        private final PriorityBlockingQueue<T> queue;
+
         private List<Subscription> subscriptions = new ArrayList<>();
 
         private final List<MagicSubscriber<T>> subscribers = new ArrayList<>();
 
         int minIdx = 0;
 
+        volatile long remain = 0;
+
+        volatile long requested = 0;
+
         private final AtomicInteger requestCompleted = new AtomicInteger();
 
-        private CompositeSubscription(Comparator<T> comp) {
+        private CompositeSubscription(Comparator<T> comp, PriorityBlockingQueue<T> queue) {
             this.comp = comp;
+            this.queue = queue;
         }
 
         public void onRequestCompleted() {
             // Internal buffers has been filled.
             if (requestCompleted.incrementAndGet() == subscriptions.size()) {
-                requestCompleted.set(0);
+//                requestCompleted.set(0);
 
+                minIdx = selectMinIdx();
 
+                // todo
+                remain = subscribers.get(minIdx).pushQueue(remain);
+
+                if (remain > 0) {
+                    requestCompleted.decrementAndGet();
+
+                    subscriptions.get(minIdx).request(Math.max(1, requested / subscriptions.size()));
+                }
             }
         }
 
         private int selectMinIdx() {
             T minItem = null;
+            int minIdx = -1;
 
-            for (MagicSubscriber<T> subcriber : subscribers) {
-                subcriber.lastItem();
+            for (int i = 0; i < subscribers.size(); i++) {
+                MagicSubscriber<T> subcriber = subscribers.get(i);
 
-                int size = subcriber.inBuf.size()
+                T item = subcriber.lastItem();
+
+                if (minItem == null || comp.compare(minItem, item) > 0) {
+                    minItem = item;
+                    minIdx = i;
+                }
+//                int size = subcriber.inBuf.size()
             }
+
+            assert minIdx != -1;
+
+            return minIdx;
         }
 
         public List<Subscription> subscriptions() {
@@ -176,6 +249,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         @Override
         public void request(long n) {
+            remain = n;
+            requested = n;
+
             requestCompleted.set(0);
 
             long requestCnt = Math.max(1, n / subscriptions.size());
