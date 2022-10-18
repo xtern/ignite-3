@@ -114,7 +114,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             queue.add(item);
 
             if (remainingCnt.decrementAndGet() <= 0) {
-                assert remainingCnt.get() == 0;
+                if (remainingCnt.get() != 0) {
+                    System.err.println("!!!!remaining failed");
+                }
 
                 compSubscription.onRequestCompleted();
             }
@@ -153,10 +155,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
         public long pushQueue(long remain, Comparator<T> comp) {
             boolean done = false;
             int pushedCnt = 0;
+            T r = null;
 
-            while (remain > 0) {
-                T r = queue.peek();
-
+            while (remain > 0 && (r = queue.peek()) != null) {
                 boolean same = comp.compare(lastItem, r) == 0;
 
                 if (!done && same)
@@ -218,18 +219,33 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
                 assert subscr != null && !subscr.finished;
 
                 // todo
-                remain = subscr.pushQueue(remain, comp);
+                System.out.println(">xxx> pushQueue");
+                try {
+                    remain = subscr.pushQueue(remain, comp);
+                } catch (Throwable t) {
+                    t.printStackTrace();
+                }
+                System.out.println(">xxx> pushQueue :: end");
 
                 if (remain > 0) {
+                    long dataAmount = Math.max(1, requested / subscriptions.size());
+
                     for (Integer idx : minIdxs) {
                         requestCompleted.decrementAndGet();
 
-                        long dataAmount = Math.max(1, requested / subscriptions.size());
-
                         subscribers.get(idx).onDataRequested(dataAmount);
+                    }
+
+                    for (Integer idx : minIdxs) {
+                        System.out.println(">xxx> idx =" + idx + " requested=" + dataAmount);
+
                         subscriptions.get(idx).request(dataAmount);
                     }
+                } else {
+                    System.out.println(">xxx> remin is zero");
                 }
+            } else {
+                System.out.println(">xxx> waiting " + (subscriptions.size() - requestCompleted.get()));
             }
         }
 

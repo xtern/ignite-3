@@ -93,7 +93,7 @@ public class CompositePublisherTest {
 
     @Test
     public void testPublisher() throws InterruptedException {
-        int dataCnt = 10;
+        int dataCnt = 20;
         int requestCnt = 10;
         int threadCnt = 3;
         int totalCnt = threadCnt * dataCnt;
