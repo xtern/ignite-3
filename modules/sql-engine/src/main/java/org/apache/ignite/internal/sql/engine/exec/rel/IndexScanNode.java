@@ -266,7 +266,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             return;
         }
 
-        CompositePublisher publisher = new CompositePublisher();
+        CompositePublisher<BinaryTuple> publisher = new CompositePublisher<>();
 
         for (int curPartIdx = 0; curPartIdx < parts.length; curPartIdx++) {
 

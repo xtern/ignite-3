@@ -17,186 +17,22 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.Flow.Publisher;
-import java.util.concurrent.Flow.Subscriber;
-import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class CompositePublisherTest {
-    static class TestPublisher<T> implements Publisher<T> {
-        private final T[] data;
-
-        TestPublisher(T[] data) {
-            this.data = data;
-        }
-
-        class TestSubscription implements Subscription {
-            int idx = 0;
-
-            @Override
-            public void request(long n) {
-                CompletableFuture.supplyAsync(() -> {
-                    int startIdx = idx;
-                    int endIdx = Math.min(idx + (int)n, data.length);
-
-                    for (int n0 = startIdx; n0 < endIdx; n0++) {
-                        subscriber.onNext(data[n0]);
-                    }
-
-//                    if (endIdx == data.length)
-                    subscriber.onComplete();
-
-                    return n;
-                });
-            }
-
-            @Override
-            public void cancel() {
-                subscriber.onError(new RuntimeException("cancelled"));
-            }
-        }
-
-        private Subscriber<? super T> subscriber;
-
-        @Override
-        public void subscribe(Subscriber<? super T> subscriber) {
-            this.subscriber = subscriber;
-
-            subscriber.onSubscribe(new TestSubscription());
-        }
-    }
-
-    @Test
-    public void testPublisher() throws InterruptedException {
-        int dataCnt = 10;
-        int threadCnt = 3;
-        int totalCnt = threadCnt * dataCnt;
-        Integer[][] data = new Integer[threadCnt][dataCnt];
-        int[] expData = new int[totalCnt];
-
-        int k = 0;
-
-        for (int i = 0; i < threadCnt; i++) {
-            for (int j = 0; j < dataCnt; j++) {
-                data[i][j] = ThreadLocalRandom.current().nextInt(totalCnt);
-
-                expData[k++] = data[i][j];
-            }
-
-            Arrays.sort(data[i]);
-        }
-
-        Arrays.sort(expData);
-
-//        ArrayList<Integer> res = new ArrayList<>();
-
-//        int[] res = new int[threadCnt * dataCnt];
-        LinkedBlockingQueue<Integer> res = new LinkedBlockingQueue<>();
-
-        CompositePublisher<Integer> publisher = new CompositePublisher<>();
-
-        for (int i = 0; i < threadCnt; i++) {
-            publisher.add(new TestPublisher<>(data[i]));
-        }
-
-        CountDownLatch finishLatch = new CountDownLatch(1);
-
-        publisher.subscribe(new Subscriber<>() {
-                @Override
-                public void onSubscribe(Subscription subscription) {
-                    subscription.request(100);
-                }
-
-                @Override
-                public void onNext(Integer item) {
-                    System.out.println(">xxx> " + item);
-
-                    res.add(item);
-                }
-
-                @Override
-                public void onError(Throwable throwable) {
-
-                }
-
-                @Override
-                public void onComplete() {
-                    System.out.println(">xxx> complete");
-
-                    finishLatch.countDown();
-                }
-        });
-
-        finishLatch.await(10, TimeUnit.SECONDS);
-
-        int[] resArr = new int[threadCnt * dataCnt];
-
-        k = 0;
-
-        for (Integer n : res)
-            resArr[k++] = n;
-
-        Assertions.assertArrayEquals(expData, resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
-
-//        if (true)
-//            return;
-//
-//        Thread[] threads = new Thread[threadCnt];
-//        Queue<Object> resQueue = new LinkedBlockingQueue<>();
-//        MegaAcceptor<Object, Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
-////            System.out.println(">xxx> submit " + v);
-//
-//            resQueue.add(v);
-//        }, Comparator.comparingInt(v -> v), (t) -> (int)t);
-//
-//        CyclicBarrier startBarrier = new CyclicBarrier(threadCnt);
-//
-//        for (int n = 0; n < threadCnt; n++) {
-//            int[] arrCp = Arrays.copyOfRange(data, n * dataCnt, (n + 1) * dataCnt);
-//
-//            Arrays.sort(arrCp);
-//
-//            threads[n] = new Thread(new TestDataStreamer(startBarrier, n, arrCp, acceptor));
-//        }
-//
-//        for (int n = 0; n < threadCnt; n++)
-//            threads[n].start();
-//
-//        for (int n = 0; n < threadCnt; n++)
-//            threads[n].join();
-//
-//        Arrays.sort(data);
-//
-//        int[] actData = new int[data.length];
-//        int cnt = 0;
-//        for (Object obj : resQueue) {
-//            actData[cnt++] = (int)obj;
-//        }
-
-//        List<Integer> expList = Arrays.stream(data)
-//                .boxed()
-//                .collect(Collectors.toList());
-
-//        Assertions.assertArrayEquals(data, actData, Arrays.toString(data) + "\n" + Arrays.toString(actData));
-    }
-
+public class CompositePublisherTestOld {
     static class MegaAcceptor<T, R> {
         private final T[] recentRows;
         private final Consumer<R> finalConsumer;
@@ -361,7 +197,7 @@ public class CompositePublisherTest {
     }
 
     @Test
-    public void testBlockingPublisher() throws InterruptedException {
+    public void testPublisher() throws InterruptedException {
         int dataCnt = 1_000;
         int threadCnt = 8;
         int[] data = new int[dataCnt * threadCnt];

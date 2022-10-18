@@ -26,19 +26,19 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.ignite.internal.schema.BinaryTuple;
 
-public class CompositePublisher implements Flow.Publisher<BinaryTuple> {
-    List<Publisher<BinaryTuple>> publishers = new ArrayList<>();
+public class CompositePublisher<T> implements Flow.Publisher<T> {
+    List<Publisher<T>> publishers = new ArrayList<>();
 
     CompositeSubscription compSubscription = new CompositeSubscription();
 
     AtomicBoolean subscribed = new AtomicBoolean();
 
-    public void add(Publisher<BinaryTuple> publisher) {
+    public void add(Publisher<T> publisher) {
         publishers.add(publisher);
     }
 
     @Override
-    public void subscribe(Subscriber<? super BinaryTuple> subscriber) {
+    public void subscribe(Subscriber<? super T> subscriber) {
         // todo sync
         if (!subscribed.compareAndSet(false, true)) {
             throw new IllegalStateException("Support only one subscriber");
@@ -90,6 +90,7 @@ public class CompositePublisher implements Flow.Publisher<BinaryTuple> {
 
         @Override
         public void onComplete() {
+            System.out.println(">xxx> complete " + idx);
             // todo sync properly
             if (complete()) {
                 System.out.println(">xxx> completed");
