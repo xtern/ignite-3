@@ -85,6 +85,8 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private final AtomicLong remainingCnt = new AtomicLong();
 
+        private volatile boolean finished;
+
         MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
             assert delegate != null;
 
@@ -134,7 +136,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         @Override
         public void onComplete() {
-//            compSubscription.subscriptionFinished(idx)
+            finished = true;
+
+            compSubscription.subscriptionFinished(idx);
             // last submitter will choose what to do next
 //            compSubscription.onRequestCompleted();
 
@@ -209,8 +213,12 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
                 List<Integer> minIdxs = selectMinIdx();
 
+                MagicSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
+
+                assert subscr != null && !subscr.finished;
+
                 // todo
-                remain = subscribers.get(minIdxs.get(0)).pushQueue(remain, comp);
+                remain = subscr.pushQueue(remain, comp);
 
                 if (remain > 0) {
                     for (Integer idx : minIdxs) {
@@ -231,6 +239,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
             for (int i = 0; i < subscribers.size(); i++) {
                 MagicSubscriber<T> subcriber = subscribers.get(i);
+
+                if (subcriber == null || subcriber.finished)
+                    continue;
 
                 T item = subcriber.lastItem();
 
@@ -285,6 +296,10 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             for (Subscription subscription : subscriptions) {
                 subscription.cancel();
             }
+        }
+
+        public void subscriptionFinished(int idx) {
+            subscriptions.set(idx, null);
         }
     }
 }
