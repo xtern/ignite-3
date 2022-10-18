@@ -34,6 +34,7 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -49,15 +50,15 @@ public class CompositePublisherTest {
         }
 
         class TestSubscription implements Subscription {
-            int idx = 0;
+            AtomicReference<Integer> idx = new AtomicReference<>(0);
 
             @Override
             public void request(long n) {
                 System.out.println(">xxx> request " + n);
 
                 CompletableFuture.supplyAsync(() -> {
-                    int startIdx = idx;
-                    int endIdx = Math.min(idx + (int)n, data.length);
+                    int startIdx = idx.get();
+                    int endIdx = Math.min(startIdx + (int)n, data.length);
 
                     System.out.println(">xxx> push " + Arrays.toString(Arrays.copyOfRange(data, startIdx, endIdx)));
 
@@ -65,7 +66,7 @@ public class CompositePublisherTest {
                         subscriber.onNext(data[n0]);
                     }
 
-                    idx = endIdx;
+                    idx.set(endIdx);
 
                     if (endIdx >= data.length) {
                         subscriber.onComplete();
