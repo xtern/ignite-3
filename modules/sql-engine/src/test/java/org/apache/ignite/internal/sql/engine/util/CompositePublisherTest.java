@@ -30,24 +30,27 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class CompositePublisherTest {
-    static class MegaAcceptor<T> {
-        private final Object[] recentRows;
-        private final Consumer<T> finalConsumer;
+    static class MegaAcceptor<T, R> {
+        private final T[] recentRows;
+        private final Consumer<R> finalConsumer;
         private final ReentrantLock lock = new ReentrantLock();
-        private final Comparator<T> cmp;
+        private final Comparator<R> cmp;
         private final Set<Integer> finished = new HashSet<>();
+        private final Function<T, R> conv;
 
         private int minIdx = -1;
 
-        MegaAcceptor(int threadCnt, Consumer<T> finalConsumer, Comparator<T> cmp) {
-            this.recentRows = new Object[threadCnt];
+        MegaAcceptor(int threadCnt, Consumer<R> finalConsumer, Comparator<R> cmp, Function<T, R> conv) {
+            this.recentRows = (T[])new Object[threadCnt];
             this.finalConsumer = finalConsumer;
             this.cmp = cmp;
+            this.conv = conv;
         }
 
         private T minValue(int idx) throws InterruptedException {
@@ -62,17 +65,17 @@ public class CompositePublisherTest {
                         if (minIdx != idx)
                             return null;
 
-                        Object minVal = recentRows[minIdx];
+                        T minVal = recentRows[minIdx];
 
                         recentRows[minIdx] = null;
 
-                        return (T)minVal;
+                        return minVal;
                     }
                 }
             }
 
             for (int n = 0; n < recentRows.length; n++) {
-                Object obj = recentRows[n];
+                T obj = recentRows[n];
 
                 if (obj == null) {
                     if (finished.contains(n)) {
@@ -87,9 +90,9 @@ public class CompositePublisherTest {
                     return null;
                 }
 
-                T val = (T)obj;
+//                T val = (T)obj;
 
-                if (cmp.compare((T)recentRows[minIdx0], val) > 0)
+                if (cmp.compare(conv.apply(recentRows[minIdx0]), conv.apply(obj)) > 0)
                     minIdx0 = n;
             }
 
@@ -101,11 +104,11 @@ public class CompositePublisherTest {
                 return null;
             }
 
-            Object minVal = recentRows[minIdx0];
+            T minVal = recentRows[minIdx0];
 
             recentRows[minIdx] = null;
 
-            return (T)minVal;
+            return minVal;
         }
 
         public synchronized void accept(T o, int idx) {
@@ -127,44 +130,24 @@ public class CompositePublisherTest {
                     assert minIdx == idx;
 
                     if (recentRows[idx] != null) {
-                        T v = (T)recentRows[idx];
+                        T v = recentRows[idx];
 
                         recentRows[idx] = null;
 
-                        finalConsumer.accept(v);
+                        finalConsumer.accept(conv.apply(v));
                     }
 
                     T v = minValue(idx);
-
-//                    System.out.println("ret = " + v + ", minIdx=" + minIdx + " idx=" + idx + ", recentRows[idx]=" + recentRows[idx]);
 
                     notifyAll();
 
                     assert minIdx != idx;
 
-//                    if (recentRows[idx] != null) {
-//                        v = (T)recentRows[idx];
-//
-//                        recentRows[idx] = null;
-//
-//                        finalConsumer.accept(v);
-//                    } else {
-//                        if (minIdx == idx && v != null) {
-//                            minIdx = -1;
-//
-//                            finalConsumer.accept(v);
-//                        }
-//                    }
-
-//                    if (v != null)
-//                        finalConsumer.accept(v);
-
                     return;
                 }
 
                 if (minIdx == idx && recentRows[idx] != null)
-                    finalConsumer.accept((T)recentRows[idx]);
-//                    lock.newCondition()
+                    finalConsumer.accept(conv.apply(recentRows[idx]));
 
                 if (minIdx == -1)
                     minIdx = idx;
@@ -174,7 +157,7 @@ public class CompositePublisherTest {
                 T v = minValue(idx);
 
                 if (v != null)
-                    finalConsumer.accept(v);
+                    finalConsumer.accept(conv.apply(v));
             }
             catch (InterruptedException e) {
                 e.printStackTrace();
@@ -189,10 +172,10 @@ public class CompositePublisherTest {
     static class TestDataStreamer implements Runnable {
         private final int[] data;
         private final int idx;
-        private final MegaAcceptor<Integer> consumer;
+        private final MegaAcceptor<Object, Integer> consumer;
         private final CyclicBarrier startBarrier;
 
-        public TestDataStreamer(CyclicBarrier startBarrier, int idx, int[] data, MegaAcceptor<Integer> consumer) {
+        public TestDataStreamer(CyclicBarrier startBarrier, int idx, int[] data, MegaAcceptor<Object, Integer> consumer) {
             this.idx = idx;
             this.data = data;
             this.consumer = consumer;
@@ -228,11 +211,11 @@ public class CompositePublisherTest {
 
         Thread[] threads = new Thread[threadCnt];
         Queue<Object> resQueue = new LinkedBlockingQueue<>();
-        MegaAcceptor<Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
+        MegaAcceptor<Object, Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
 //            System.out.println(">xxx> submit " + v);
 
             resQueue.add(v);
-        }, Comparator.comparingInt(v -> v));
+        }, Comparator.comparingInt(v -> v), (t) -> (int)t);
 
         CyclicBarrier startBarrier = new CyclicBarrier(threadCnt);
 
