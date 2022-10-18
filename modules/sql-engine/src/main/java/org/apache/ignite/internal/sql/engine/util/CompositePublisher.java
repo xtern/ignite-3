@@ -18,20 +18,29 @@
 package org.apache.ignite.internal.sql.engine.util;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.apache.ignite.internal.schema.BinaryTuple;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CompositePublisher<T> implements Flow.Publisher<T> {
     List<Publisher<T>> publishers = new ArrayList<>();
 
-    CompositeSubscription compSubscription = new CompositeSubscription();
+    CompositeSubscription<T> compSubscription;
 
     AtomicBoolean subscribed = new AtomicBoolean();
+
+    private final Comparator<T> comp;
+
+    public CompositePublisher(Comparator<T> comp) {
+        this.comp = comp;
+
+        compSubscription = new CompositeSubscription<>(comp);
+    }
 
     public void add(Publisher<T> publisher) {
         publishers.add(publisher);
@@ -56,12 +65,14 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private final int idx;
 
-        private final CompositeSubscription compSubscription;
+        private final CompositeSubscription<T> compSubscription;
+
+        private List<T> inBuf = new ArrayList<>();
 
         // todo
         private Subscription subscription;
 
-        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription compSubscription) {
+        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription) {
             assert delegate != null;
 
             this.delegate = delegate;
@@ -69,9 +80,16 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             this.compSubscription = compSubscription;
         }
 
+        private T lastItem() {
+            if (!inBuf.isEmpty())
+                return inBuf.get(inBuf.size() - 1);
+
+            return null;
+        }
+
         @Override
         public void onSubscribe(Subscription subscription) {
-            compSubscription.add(this.subscription = subscription);
+            compSubscription.add(this.subscription = subscription, this);
         }
 
         @Override
@@ -90,12 +108,15 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         @Override
         public void onComplete() {
-            System.out.println(">xxx> complete " + idx);
+            // last submitter will choose what to do next
+            compSubscription.onRequestCompleted();
+
+//            System.out.println(">xxx> complete " + idx);
             // todo sync properly
-            if (complete()) {
-                System.out.println(">xxx> completed");
-                delegate.onComplete();
-            }
+//            if (complete()) {
+////                System.out.println(">xxx> completed");
+//                delegate.onComplete();
+//            }
         }
 
         boolean complete() {
@@ -103,16 +124,49 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
         }
     }
 
-    private static class CompositeSubscription implements Subscription {
+    private static class CompositeSubscription<T> implements Subscription {
+
+        private final Comparator<T> comp;
 
         private List<Subscription> subscriptions = new ArrayList<>();
+
+        private final List<MagicSubscriber<T>> subscribers = new ArrayList<>();
+
+        int minIdx = 0;
+
+        private final AtomicInteger requestCompleted = new AtomicInteger();
+
+        private CompositeSubscription(Comparator<T> comp) {
+            this.comp = comp;
+        }
+
+        public void onRequestCompleted() {
+            // Internal buffers has been filled.
+            if (requestCompleted.incrementAndGet() == subscriptions.size()) {
+                requestCompleted.set(0);
+
+
+            }
+        }
+
+        private int selectMinIdx() {
+            T minItem = null;
+
+            for (MagicSubscriber<T> subcriber : subscribers) {
+                subcriber.lastItem();
+
+                int size = subcriber.inBuf.size()
+            }
+        }
 
         public List<Subscription> subscriptions() {
             return subscriptions;
         }
 
-        public void add(Subscription subscription) {
+        public void add(Subscription subscription, MagicSubscriber<T> subscriber) {
             subscriptions.add(subscription);
+
+            subscribers.add(subscriber);
         }
 
         // todo sync
@@ -122,9 +176,12 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         @Override
         public void request(long n) {
-            // todo sync
+            requestCompleted.set(0);
+
+            long requestCnt = Math.max(1, n / subscriptions.size());
+
             for (Subscription subscription : subscriptions) {
-                subscription.request(n);
+                subscription.request(requestCnt);
             }
         }
 

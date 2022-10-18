@@ -20,7 +20,6 @@ package org.apache.ignite.internal.sql.engine.exec.rel;
 import static org.apache.ignite.internal.util.ArrayUtils.nullOrEmpty;
 
 import java.util.BitSet;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.Flow;
@@ -39,7 +38,6 @@ import org.apache.ignite.internal.sql.engine.exec.RowHandler;
 import org.apache.ignite.internal.sql.engine.schema.IgniteIndex;
 import org.apache.ignite.internal.sql.engine.schema.IgniteIndex.Type;
 import org.apache.ignite.internal.sql.engine.schema.InternalIgniteTable;
-import org.apache.ignite.internal.sql.engine.util.CompositePublisher;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.Nullable;
 
@@ -84,13 +82,11 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
     private Subscription activeSubscription;
 
-//    private int curPartIdx;
+    private int curPartIdx;
 
     private @Nullable BinaryTuple lowerBound;
 
     private @Nullable BinaryTuple upperBound;
-
-    private Comparator<RowT> cmp;
 
     /**
      * Constructor.
@@ -109,7 +105,6 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             IgniteIndex schemaIndex,
             InternalIgniteTable schemaTable,
             int[] parts,
-            Comparator<RowT> cmp,
             @Nullable Supplier<RowT> lowerCond,
             @Nullable Supplier<RowT> upperCond,
             @Nullable Predicate<RowT> filters,
@@ -133,7 +128,6 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
         // TODO: create ticket to add flags support
         flags = SortedIndex.INCLUDE_LEFT & SortedIndex.INCLUDE_RIGHT;
-        this.cmp = cmp;
     }
 
     /** {@inheritDoc} */
@@ -167,7 +161,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
     protected void rewindInternal() {
         requested = 0;
         waiting = 0;
-//        curPartIdx = 0;
+        curPartIdx = 0;
         lowerBound = null;
         upperBound = null;
 
@@ -235,14 +229,10 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
         }
     }
 
-    private boolean processed = false;
-
     private void requestNextBatch() {
         if (waiting == NOT_WAITING) {
             return;
         }
-
-        System.out.println("request next");
 
         if (waiting == 0) {
             // we must not request rows more than inBufSize
@@ -252,25 +242,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
         Subscription subscription = this.activeSubscription;
         if (subscription != null) {
             subscription.request(waiting);
-
-            waiting = NOT_WAITING;
-
-            return;
-        }
-
-        if (processed) {
-            waiting = NOT_WAITING;
-
-            processed = false;
-
-            return;
-        }
-
-        CompositePublisher<BinaryTuple> publisher = new CompositePublisher<>();
-
-        for (int curPartIdx = 0; curPartIdx < parts.length; curPartIdx++) {
-
-//        else if (curPartIdx < parts.length) {
+        } else if (curPartIdx < parts.length) {
             if (schemaIndex.type() == Type.SORTED) {
                 //TODO: https://issues.apache.org/jira/browse/IGNITE-17813
                 // Introduce new publisher using merge-sort algo to merge partition index publishers.
@@ -279,14 +251,14 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
                     upperBound = toBinaryTuplePrefix(upperCond);
                 }
 
-                publisher.add(((SortedIndex) schemaIndex.index()).scan(
-                        parts[curPartIdx],
+                ((SortedIndex) schemaIndex.index()).scan(
+                        parts[curPartIdx++],
                         context().transaction(),
                         lowerBound,
                         upperBound,
                         flags,
                         requiredColumns
-                ));
+                ).subscribe(new SubscriberImpl());
             } else {
                 assert schemaIndex.type() == Type.HASH;
                 assert lowerCond == upperCond;
@@ -295,22 +267,16 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
                     lowerBound = toBinaryTuple(lowerCond);
                 }
 
-                publisher.add(
-                        schemaIndex.index().scan(
-                                parts[curPartIdx],
-                                context().transaction(),
-                                lowerBound,
-                                requiredColumns
-                        ));
+                schemaIndex.index().scan(
+                        parts[curPartIdx++],
+                        context().transaction(),
+                        lowerBound,
+                        requiredColumns
+                ).subscribe(new SubscriberImpl());
             }
+        } else {
+            waiting = NOT_WAITING;
         }
-
-        processed = true;
-
-        publisher.subscribe(new SubscriberImpl());
-//        } else {
-//            waiting = NOT_WAITING;
-//        }
     }
 
     private class SubscriberImpl implements Flow.Subscriber<BinaryTuple> {

@@ -17,7 +17,6 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -110,7 +109,7 @@ public class CompositePublisherTest {
 //        int[] res = new int[threadCnt * dataCnt];
         LinkedBlockingQueue<Integer> res = new LinkedBlockingQueue<>();
 
-        CompositePublisher<Integer> publisher = new CompositePublisher<>();
+        CompositePublisher<Integer> publisher = new CompositePublisher<>(comp);
 
         for (int i = 0; i < threadCnt; i++) {
             publisher.add(new TestPublisher<>(data[i]));
