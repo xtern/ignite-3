@@ -35,7 +35,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -93,9 +92,19 @@ public class CompositePublisherTest {
 
     @Test
     public void testPublisher() throws InterruptedException {
-        int dataCnt = 20;
-        int requestCnt = 10;
-        int threadCnt = 3;
+        doTestPublisher(20, 10, 3);
+    }
+
+    @Test
+    public void testPublisherNotEnoughData() throws InterruptedException {
+        doTestPublisher(10, 30, 3);
+    }
+
+//    @Test
+    public void doTestPublisher(int dataCnt, int requestCnt, int threadCnt) throws InterruptedException {
+//        int dataCnt = 20;
+//        int requestCnt = 10;
+//        int threadCnt = 3;
         int totalCnt = threadCnt * dataCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
         int[] expData = new int[totalCnt];
