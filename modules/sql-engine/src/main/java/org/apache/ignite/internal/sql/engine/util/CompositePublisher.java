@@ -17,12 +17,9 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
-import static org.apache.calcite.jdbc.CalcitePrepare.Dummy.peek;
-
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.PriorityQueue;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
@@ -30,6 +27,7 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class CompositePublisher<T> implements Flow.Publisher<T> {
     List<Publisher<T>> publishers = new ArrayList<>();
@@ -85,6 +83,8 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private volatile T lastItem;
 
+        private final AtomicLong remainingCnt = new AtomicLong();
+
         MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
             assert delegate != null;
 
@@ -110,21 +110,33 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             lastItem = item;
 
             queue.add(item);
-            //delegate.onNext(item);
+
+            if (remainingCnt.decrementAndGet() <= 0) {
+                assert remainingCnt.get() == 0;
+
+                compSubscription.onRequestCompleted();
+            }
         }
 
         @Override
         public void onError(Throwable throwable) {
+            throwable.printStackTrace();
+
             // todo sync properly
             if (complete()) {
                 delegate.onError(throwable);
             }
         }
 
+        public void onDataRequested(long n) {
+            remainingCnt.set(n);
+        }
+
         @Override
         public void onComplete() {
+//            compSubscription.subscriptionFinished(idx)
             // last submitter will choose what to do next
-            compSubscription.onRequestCompleted();
+//            compSubscription.onRequestCompleted();
 
 //            System.out.println(">xxx> complete " + idx);
             // todo sync properly
@@ -134,29 +146,26 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 //            }
         }
 
-        public long pushQueue(long remain) {
+        public long pushQueue(long remain, Comparator<T> comp) {
             boolean done = false;
             int pushedCnt = 0;
 
             while (remain > 0) {
                 T r = queue.peek();
 
-                if (!done) {
-                    delegate.onNext(queue.poll());
+                boolean same = comp.compare(lastItem, r) == 0;
 
-                    --remain;
-                }
-
-                if (lastItem == r) {
+                if (!done && same)
                     done = true;
 
+                if (!done || same) {
                     delegate.onNext(queue.poll());
 
                     --remain;
                 }
-                else
-                    if (done)
-                        break;
+
+                if (done && !same)
+                    break;
             }
 
             if (remain == 0)
@@ -180,7 +189,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private final List<MagicSubscriber<T>> subscribers = new ArrayList<>();
 
-        int minIdx = 0;
+//        int minIdx = 0;
 
         volatile long remain = 0;
 
@@ -198,38 +207,46 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             if (requestCompleted.incrementAndGet() == subscriptions.size()) {
 //                requestCompleted.set(0);
 
-                minIdx = selectMinIdx();
+                List<Integer> minIdxs = selectMinIdx();
 
                 // todo
-                remain = subscribers.get(minIdx).pushQueue(remain);
+                remain = subscribers.get(minIdxs.get(0)).pushQueue(remain, comp);
 
                 if (remain > 0) {
-                    requestCompleted.decrementAndGet();
+                    for (Integer idx : minIdxs) {
+                        requestCompleted.decrementAndGet();
 
-                    subscriptions.get(minIdx).request(Math.max(1, requested / subscriptions.size()));
+                        long dataAmount = Math.max(1, requested / subscriptions.size());
+
+                        subscribers.get(idx).onDataRequested(dataAmount);
+                        subscriptions.get(idx).request(dataAmount);
+                    }
                 }
             }
         }
 
-        private int selectMinIdx() {
+        private List<Integer> selectMinIdx() {
             T minItem = null;
-            int minIdx = -1;
+            List<Integer> minIdxs = new ArrayList<>();
 
             for (int i = 0; i < subscribers.size(); i++) {
                 MagicSubscriber<T> subcriber = subscribers.get(i);
 
                 T item = subcriber.lastItem();
 
-                if (minItem == null || comp.compare(minItem, item) > 0) {
+                int cmpRes = 0;;
+
+                if (minItem == null || (cmpRes = comp.compare(minItem, item)) >= 0) {
                     minItem = item;
-                    minIdx = i;
+
+                    if (cmpRes != 0)
+                        minIdxs.clear();
+
+                    minIdxs.add(i);
                 }
-//                int size = subcriber.inBuf.size()
             }
 
-            assert minIdx != -1;
-
-            return minIdx;
+            return minIdxs;
         }
 
         public List<Subscription> subscriptions() {
@@ -256,8 +273,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
             long requestCnt = Math.max(1, n / subscriptions.size());
 
-            for (Subscription subscription : subscriptions) {
-                subscription.request(requestCnt);
+            for (int i = 0; i < subscriptions.size(); i++) {
+                subscribers.get(i).onDataRequested(requestCnt);
+                subscriptions.get(i).request(requestCnt);
             }
         }
 

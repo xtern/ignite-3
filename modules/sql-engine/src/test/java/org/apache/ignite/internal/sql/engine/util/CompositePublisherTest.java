@@ -67,8 +67,9 @@ public class CompositePublisherTest {
 
                     idx = endIdx;
 
-//                    if (endIdx == data.length)
-                    subscriber.onComplete();
+                    if (endIdx >= data.length) {
+                        subscriber.onComplete();
+                    }
 
                     return n;
                 });
