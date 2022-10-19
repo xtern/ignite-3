@@ -46,9 +46,11 @@ public class CompositeSubscription<T> implements Subscription {
 
     public void onRequestCompleted0() {
         if (activeSubcribers() == 0) {
-            System.out.println(">xxx> finish");
-
-            subscribers.get(0).pushQueue(remain, null);
+            if (queue.size() > 0) {
+                synchronized (this) {
+                    subscribers.get(0).pushQueue(remain, null);
+                }
+            }
 
             // all work done
             return;
@@ -62,11 +64,10 @@ public class CompositeSubscription<T> implements Subscription {
 
         System.out.println(">xxx> pushQueue");
 
-        try {
+        synchronized (this){
             remain = subscr.pushQueue(remain, comp);
-        } catch (Throwable t) {
-            t.printStackTrace();
         }
+
         System.out.println(">xxx> pushQueue :: end");
 
         if (remain > 0) {
@@ -160,7 +161,6 @@ public class CompositeSubscription<T> implements Subscription {
     }
 
     public void cancel(int idx) {
-        //subscriptions.set(idx, null);
         finished.add(idx);
 
         System.out.println(">xxx> finished " + idx);

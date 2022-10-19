@@ -35,6 +35,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -101,9 +102,6 @@ public class CompositePublisherTest {
 
 //    @Test
     public void doTestPublisher(int dataCnt, int requestCnt, int threadCnt) throws InterruptedException {
-//        int dataCnt = 20;
-//        int requestCnt = 10;
-//        int threadCnt = 3;
         int totalCnt = threadCnt * dataCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
         int[] expData = new int[totalCnt];
@@ -122,11 +120,7 @@ public class CompositePublisherTest {
 
         Arrays.sort(expData);
 
-//        ArrayList<Integer> res = new ArrayList<>();
-
-//        int[] res = new int[threadCnt * dataCnt];
         LinkedBlockingQueue<Integer> res = new LinkedBlockingQueue<>();
-
         CompositePublisher<Integer> publisher = new CompositePublisher<>(Comparator.comparingInt(v -> v));
 
         for (int i = 0; i < threadCnt; i++) {
@@ -134,6 +128,7 @@ public class CompositePublisherTest {
         }
 
         CountDownLatch finishLatch = new CountDownLatch(1);
+        AtomicLong receivedCnt = new AtomicLong();
 
         publisher.subscribe(new Subscriber<>() {
                 @Override
@@ -143,19 +138,22 @@ public class CompositePublisherTest {
 
                 @Override
                 public void onNext(Integer item) {
-                    System.out.println(">xxx> " + item);
+                    System.out.println(">[xxx]> " + item);
 
                     res.add(item);
+
+                    if (receivedCnt.decrementAndGet() == 0)
+                        finishLatch.countDown();
                 }
 
                 @Override
                 public void onError(Throwable throwable) {
-
+                    throwable.printStackTrace();
                 }
 
                 @Override
                 public void onComplete() {
-                    System.out.println(">xxx> complete");
+                    System.out.println(">[xxx]> subscription complete");
 
                     finishLatch.countDown();
                 }
