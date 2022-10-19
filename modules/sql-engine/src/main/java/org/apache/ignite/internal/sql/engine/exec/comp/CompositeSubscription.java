@@ -46,6 +46,8 @@ public class CompositeSubscription<T> implements Subscription {
 
     public void onRequestCompleted0() {
         if (activeSubcribers() == 0) {
+            System.out.println(">xxx> finish");
+
             subscribers.get(0).pushQueue(remain, null);
 
             // all work done
@@ -77,7 +79,7 @@ public class CompositeSubscription<T> implements Subscription {
             }
 
             for (Integer idx : minIdxs) {
-                System.out.println(">xxx> idx =" + idx + " requested=" + dataAmount);
+                System.out.println(">xxx> idx=" + idx + " requested=" + dataAmount);
 
                 subscriptions.get(idx).request(dataAmount);
             }
@@ -110,6 +112,10 @@ public class CompositeSubscription<T> implements Subscription {
 
                 minIdxs.add(i);
             }
+        }
+
+        if (minIdxs.isEmpty()) {
+            new IllegalStateException("minIdx is empty").printStackTrace();
         }
 
         return minIdxs;
@@ -157,7 +163,15 @@ public class CompositeSubscription<T> implements Subscription {
         //subscriptions.set(idx, null);
         finished.add(idx);
 
-        if (requestCompleted.get() >= activeSubcribers())
+        System.out.println(">xxx> finished " + idx);
+
+        if (requestCompleted.get() >= activeSubcribers()) {
+            System.out.println(">xxx> cancel -> onRequestCompleted");
+
             onRequestCompleted0();
+        }
+        else {
+            System.out.println(">xxx> still waiting completed=" + requestCompleted.get() + ", actie =" + activeSubcribers());
+        }
     }
 }

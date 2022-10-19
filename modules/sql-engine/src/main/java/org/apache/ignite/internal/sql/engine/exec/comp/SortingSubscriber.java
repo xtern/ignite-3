@@ -125,7 +125,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
             }
         }
 
-        if (remain == 0) {
+        if (remain == 0 || comp == null) {
             delegate.onComplete();
         }
 

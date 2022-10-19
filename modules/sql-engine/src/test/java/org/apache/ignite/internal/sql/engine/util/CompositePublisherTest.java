@@ -55,8 +55,6 @@ public class CompositePublisherTest {
 
             @Override
             public void request(long n) {
-                System.out.println(">xxx> request " + n);
-
                 CompletableFuture.supplyAsync(() -> {
                     int startIdx = idx.getAndAdd((int)n);
                     int endIdx = Math.min(startIdx + (int)n, data.length);
