@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.ignite.raft.jraft.util.concurrent.ConcurrentHashSet;
 
 public class CompositeSubscription<T> implements Subscription {
 
@@ -17,7 +18,7 @@ public class CompositeSubscription<T> implements Subscription {
 
     private final List<SortingSubscriber<T>> subscribers = new ArrayList<>();
 
-//        int minIdx = 0;
+    private final ConcurrentHashSet<Integer> finished = new ConcurrentHashSet<>();
 
     volatile long remain = 0;
 
@@ -30,45 +31,58 @@ public class CompositeSubscription<T> implements Subscription {
         this.queue = queue;
     }
 
+    public int activeSubcribers() {
+        return subscriptions.size() - finished.size();
+    }
+
     public void onRequestCompleted() {
         // Internal buffers has been filled.
-        if (requestCompleted.incrementAndGet() == subscriptions.size()) {
-//                requestCompleted.set(0);
+        if (requestCompleted.incrementAndGet() >= activeSubcribers()) {
+            onRequestCompleted0();
+        } else {
+            System.out.println(">xxx> waiting " + (subscriptions.size() - activeSubcribers()));
+        }
+    }
 
-            List<Integer> minIdxs = selectMinIdx();
+    public void onRequestCompleted0() {
+        if (activeSubcribers() == 0) {
+            subscribers.get(0).pushQueue(remain, null);
 
-            SortingSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
+            // all work done
+            return;
+        }
 
-            assert subscr != null && !subscr.finished();
+        List<Integer> minIdxs = selectMinIdx();
 
-            // todo
-            System.out.println(">xxx> pushQueue");
-            try {
-                remain = subscr.pushQueue(remain, comp);
-            } catch (Throwable t) {
-                t.printStackTrace();
+        SortingSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
+
+        assert subscr != null && !subscr.finished();
+
+        System.out.println(">xxx> pushQueue");
+
+        try {
+            remain = subscr.pushQueue(remain, comp);
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+        System.out.println(">xxx> pushQueue :: end");
+
+        if (remain > 0) {
+            long dataAmount = Math.max(1, requested / subscriptions.size());
+
+            for (Integer idx : minIdxs) {
+                requestCompleted.decrementAndGet();
+
+                subscribers.get(idx).onDataRequested(dataAmount);
             }
-            System.out.println(">xxx> pushQueue :: end");
 
-            if (remain > 0) {
-                long dataAmount = Math.max(1, requested / subscriptions.size());
+            for (Integer idx : minIdxs) {
+                System.out.println(">xxx> idx =" + idx + " requested=" + dataAmount);
 
-                for (Integer idx : minIdxs) {
-                    requestCompleted.decrementAndGet();
-
-                    subscribers.get(idx).onDataRequested(dataAmount);
-                }
-
-                for (Integer idx : minIdxs) {
-                    System.out.println(">xxx> idx =" + idx + " requested=" + dataAmount);
-
-                    subscriptions.get(idx).request(dataAmount);
-                }
-            } else {
-                System.out.println(">xxx> remin is zero");
+                subscriptions.get(idx).request(dataAmount);
             }
         } else {
-            System.out.println(">xxx> waiting " + (subscriptions.size() - requestCompleted.get()));
+            System.out.println(">xxx> remain is zero");
         }
     }
 
@@ -77,16 +91,15 @@ public class CompositeSubscription<T> implements Subscription {
         List<Integer> minIdxs = new ArrayList<>();
 
         for (int i = 0; i < subscribers.size(); i++) {
-            SortingSubscriber<T> subcriber = subscribers.get(i);
+            SortingSubscriber<T> subscriber = subscribers.get(i);
 
-            if (subcriber == null || subcriber.finished()) {
+            if (subscriber == null || subscriber.finished()) {
                 continue;
             }
 
-            T item = subcriber.lastItem();
+            T item = subscriber.lastItem();
 
             int cmpRes = 0;
-            ;
 
             if (minItem == null || (cmpRes = comp.compare(minItem, item)) >= 0) {
                 minItem = item;
@@ -140,7 +153,11 @@ public class CompositeSubscription<T> implements Subscription {
         }
     }
 
-    public void subscriptionFinished(int idx) {
-        subscriptions.set(idx, null);
+    public void cancel(int idx) {
+        //subscriptions.set(idx, null);
+        finished.add(idx);
+
+        if (requestCompleted.get() >= activeSubcribers())
+            onRequestCompleted0();
     }
 }

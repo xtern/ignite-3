@@ -93,7 +93,7 @@ public class CompositePublisherTest {
 
     @Test
     public void testPublisher() throws InterruptedException {
-        doTestPublisher(20, 10, 3);
+        doTestPublisher(200, 50, 7);
     }
 
     @Test

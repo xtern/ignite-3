@@ -55,7 +55,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
     }
 
     @Override
-    public void subscribe(Subscriber<? super T> subscriber) {
+    public void subscribe(Subscriber<? super T> delegate) {
         if (!subscribed.compareAndSet(false, true)) {
             throw new IllegalStateException("Multiple subscribers are not supported.");
         }
@@ -63,9 +63,9 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
         int idx = 0;
 
         for (Publisher<T> publisher : publishers)
-            publisher.subscribe(wrap((Subscriber<T>) subscriber, idx++));
+            publisher.subscribe(wrap((Subscriber<T>) delegate, idx++));
 
-        subscriber.onSubscribe(compSubscription);
+        delegate.onSubscribe(compSubscription);
     }
 
     public Subscriber<T> wrap(Subscriber<T> subscriber, int idx) {

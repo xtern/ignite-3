@@ -4,7 +4,10 @@ import java.util.Comparator;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import javax.validation.constraints.Null;
+import org.jetbrains.annotations.Nullable;
 
 class SortingSubscriber<T> implements Subscriber<T> {
     private final Subscriber<T> delegate;
@@ -23,7 +26,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
 
     private final AtomicLong remainingCnt = new AtomicLong();
 
-    private volatile boolean finished;
+    private final AtomicBoolean finished = new AtomicBoolean();
 
     SortingSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
         assert delegate != null;
@@ -39,7 +42,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
     }
 
     boolean finished() {
-        return finished;
+        return finished.get();
     }
 
     @Override
@@ -56,7 +59,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
 
         if (remainingCnt.decrementAndGet() <= 0) {
             if (remainingCnt.get() != 0) {
-                System.err.println("!!!!remaining failed");
+                throw new IllegalStateException("!!!!remaining failed");
             }
 
             compSubscription.onRequestCompleted();
@@ -65,23 +68,29 @@ class SortingSubscriber<T> implements Subscriber<T> {
 
     @Override
     public void onError(Throwable throwable) {
+        // todo
         throwable.printStackTrace();
 
-        // todo sync properly
-        if (complete()) {
-            delegate.onError(throwable);
-        }
+        compSubscription.cancel();
+
+        delegate.onError(throwable);
     }
 
     public void onDataRequested(long n) {
+        if (finished.get())
+            return;
+
         remainingCnt.set(n);
     }
 
     @Override
     public void onComplete() {
-        finished = true;
+//        if (!finished.compareAndSet(false, true))
+//            throw new IllegalStateException("Second on complete");
+        finished.set(true);
+        remainingCnt.set(0);
 
-        compSubscription.subscriptionFinished(idx);
+        compSubscription.cancel(idx);
         // last submitter will choose what to do next
 //            compSubscription.onRequestCompleted();
 
@@ -93,13 +102,13 @@ class SortingSubscriber<T> implements Subscriber<T> {
 //            }
     }
 
-    public long pushQueue(long remain, Comparator<T> comp) {
+    public long pushQueue(long remain, @Nullable Comparator<T> comp) {
         boolean done = false;
         int pushedCnt = 0;
         T r = null;
 
         while (remain > 0 && (r = queue.peek()) != null) {
-            boolean same = comp.compare(lastItem, r) == 0;
+            boolean same = comp != null && comp.compare(lastItem, r) == 0;
 
             if (!done && same) {
                 done = true;
