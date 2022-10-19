@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import org.apache.ignite.internal.sql.engine.exec.comp.CompositePublisher;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
