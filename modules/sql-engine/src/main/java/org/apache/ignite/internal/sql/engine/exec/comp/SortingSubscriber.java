@@ -107,7 +107,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
         int pushedCnt = 0;
         T r = null;
 
-        if (remain == 0)
+        if (remain == 0 || queue.isEmpty())
             return 0;
 
         while (remain > 0 && (r = queue.peek()) != null) {
@@ -121,8 +121,6 @@ class SortingSubscriber<T> implements Subscriber<T> {
                 delegate.onNext(queue.poll());
 
                 --remain;
-
-                System.out.println("remain = " + remain);
             }
 
             if (done && !same) {
@@ -130,8 +128,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
             }
         }
 
-        if (remain == 0 || comp == null) {
-            System.out.println(">xxx> remain=" + remain);
+        if (comp == null) {
             delegate.onComplete();
         }
 

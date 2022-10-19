@@ -34,12 +34,14 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.apache.ignite.internal.sql.engine.exec.comp.CompositePublisher;
+import org.apache.ignite.internal.util.IgniteUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -91,18 +93,23 @@ public class CompositePublisherTest {
     }
 
     @Test
-    public void testPublisher() throws InterruptedException {
-        doTestPublisher(200, 50, 7);
+    public void testEnoughData() throws InterruptedException {
+        doTestPublisher(50, 357, 7);
     }
 
     @Test
-    public void testPublisherNotEnoughData() throws InterruptedException {
-        doTestPublisher(10, 30, 3);
+    public void testNotEnoughData() throws InterruptedException {
+        doTestPublisher(100, 70, 7);
+    }
+
+    @Test
+    public void testExactEnoughData() throws InterruptedException {
+        doTestPublisher(30, 30, 3);
     }
 
 //    @Test
-    public void doTestPublisher(int dataCnt, int requestCnt, int threadCnt) throws InterruptedException {
-        int totalCnt = threadCnt * dataCnt;
+    public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt) throws InterruptedException {
+        int dataCnt = totalCnt / threadCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
         int[] expData = new int[totalCnt];
 
@@ -129,6 +136,7 @@ public class CompositePublisherTest {
 
         CountDownLatch finishLatch = new CountDownLatch(1);
         AtomicLong receivedCnt = new AtomicLong();
+        AtomicInteger onCompleteCntr = new AtomicInteger();
 
         publisher.subscribe(new Subscriber<>() {
                 @Override
@@ -142,7 +150,7 @@ public class CompositePublisherTest {
 
                     res.add(item);
 
-                    if (receivedCnt.decrementAndGet() == 0)
+                    if (receivedCnt.incrementAndGet() == requestCnt)
                         finishLatch.countDown();
                 }
 
@@ -153,14 +161,27 @@ public class CompositePublisherTest {
 
                 @Override
                 public void onComplete() {
+//                    IgniteUtils.dumpStack(null, ">[xxx]> subscription complete");
                     System.out.println(">[xxx]> subscription complete");
 
                     finishLatch.countDown();
+                    onCompleteCntr.incrementAndGet();
                 }
         });
 
-        if (!finishLatch.await(10, TimeUnit.SECONDS))
-            fail("Execution timeout");
+        Assertions.assertTrue(finishLatch.await(10, TimeUnit.SECONDS), "Execution timeout");
+
+        expData = Arrays.copyOf(expData, requestCnt);
+
+        int expReceived = Math.min(requestCnt, totalCnt);
+
+        Assertions.assertEquals(expReceived, res.size());
+        Assertions.assertEquals(expReceived, receivedCnt.get());
+
+        if (requestCnt >= totalCnt)
+            Assertions.assertEquals(1, onCompleteCntr.get());
+        else
+            Assertions.assertEquals(0, onCompleteCntr.get());
 
         int[] resArr = new int[requestCnt];
 
@@ -173,7 +194,7 @@ public class CompositePublisherTest {
             resArr[k++] = n;
         }
 
-        Assertions.assertArrayEquals(Arrays.copyOf(expData, requestCnt), resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
+        Assertions.assertArrayEquals(expData, resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
 
 //        if (true)
 //            return;
