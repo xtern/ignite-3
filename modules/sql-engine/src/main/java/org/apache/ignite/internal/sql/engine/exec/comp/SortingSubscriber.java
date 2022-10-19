@@ -6,7 +6,6 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import javax.validation.constraints.Null;
 import org.jetbrains.annotations.Nullable;
 
 class SortingSubscriber<T> implements Subscriber<T> {
@@ -107,8 +106,8 @@ class SortingSubscriber<T> implements Subscriber<T> {
         int pushedCnt = 0;
         T r = null;
 
-        if (remain == 0 || queue.isEmpty())
-            return 0;
+//        if (remain == 0 || queue.isEmpty())
+//            return 0;
 
         while (remain > 0 && (r = queue.peek()) != null) {
             boolean same = comp != null && comp.compare(lastItem, r) == 0;
@@ -133,9 +132,5 @@ class SortingSubscriber<T> implements Subscriber<T> {
         }
 
         return remain;
-    }
-
-    boolean complete() {
-        return compSubscription.remove(subscription) && compSubscription.subscriptions().isEmpty();
     }
 }

@@ -17,8 +17,6 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -34,14 +32,13 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import org.apache.ignite.internal.sql.engine.exec.comp.CompositePublisher;
-import org.apache.ignite.internal.util.IgniteUtils;
+import org.apache.ignite.internal.testframework.IgniteTestUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -62,14 +59,21 @@ public class CompositePublisherTest {
                     int startIdx = idx.getAndAdd((int)n);
                     int endIdx = Math.min(startIdx + (int)n, data.length);
 
-                    System.out.println(">xxx> push " + Arrays.toString(Arrays.copyOfRange(data, startIdx, endIdx)));
+                    T[] subArr = Arrays.copyOfRange(data, startIdx, endIdx);
+
+                    System.out.println(">xxx> push " + Arrays.toString(subArr) + " subscr=" + subscriber);
 
                     for (int n0 = startIdx; n0 < endIdx; n0++) {
                         subscriber.onNext(data[n0]);
                     }
 
+                    System.out.println(">xxx> push " + Arrays.toString(subArr) + " END   subscr=" + subscriber);
+
                     if (endIdx >= data.length) {
+                        System.out.println(">xxx> onCOmplete " + subscriber);
                         subscriber.onComplete();
+                    } else {
+                        System.out.println("endIdx=" + endIdx + ", data.length=" + data.length);
                     }
 
                     return n;
@@ -94,30 +98,37 @@ public class CompositePublisherTest {
 
     @Test
     public void testEnoughData() throws InterruptedException {
-        doTestPublisher(50, 357, 7);
+        doTestPublisher(1, 2, 2, true);
+
+        doTestPublisher(50, 357, 7, true);
+        doTestPublisher(50, 357, 7, false);
     }
 
     @Test
     public void testNotEnoughData() throws InterruptedException {
-        doTestPublisher(100, 70, 7);
+        doTestPublisher(1, 0, 2, true);
+
+        doTestPublisher(100, 70, 7, true);
+        doTestPublisher(100, 70, 7, false);
+
     }
 
     @Test
     public void testExactEnoughData() throws InterruptedException {
-        doTestPublisher(30, 30, 3);
+//        doTestPublisher(30, 30, 3, true);
+        doTestPublisher(30, 30, 3, false);
     }
 
 //    @Test
-    public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt) throws InterruptedException {
+    public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt, boolean random) throws InterruptedException {
         int dataCnt = totalCnt / threadCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
         int[] expData = new int[totalCnt];
-
         int k = 0;
 
         for (int i = 0; i < threadCnt; i++) {
             for (int j = 0; j < dataCnt; j++) {
-                data[i][j] = ThreadLocalRandom.current().nextInt(totalCnt);
+                data[i][j] = random ? ThreadLocalRandom.current().nextInt(totalCnt) : k;
 
                 expData[k++] = data[i][j];
             }
@@ -178,10 +189,10 @@ public class CompositePublisherTest {
         Assertions.assertEquals(expReceived, res.size());
         Assertions.assertEquals(expReceived, receivedCnt.get());
 
-        if (requestCnt >= totalCnt)
-            Assertions.assertEquals(1, onCompleteCntr.get());
-        else
-            Assertions.assertEquals(0, onCompleteCntr.get());
+
+        int expCnt = requestCnt >= totalCnt ? 1 : 0;
+        IgniteTestUtils.waitForCondition(() -> onCompleteCntr.get() == expCnt, 10_000);;
+        Assertions.assertEquals(expCnt, onCompleteCntr.get());
 
         int[] resArr = new int[requestCnt];
 
@@ -401,7 +412,7 @@ public class CompositePublisherTest {
         }
     }
 
-    @Test
+    //@Test
     public void testBlockingPublisher() throws InterruptedException {
         int dataCnt = 1_000;
         int threadCnt = 8;

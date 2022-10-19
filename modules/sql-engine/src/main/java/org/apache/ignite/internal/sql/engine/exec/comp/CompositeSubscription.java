@@ -5,7 +5,9 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.ignite.internal.util.IgniteUtils;
 import org.apache.ignite.raft.jraft.util.concurrent.ConcurrentHashSet;
 
 public class CompositeSubscription<T> implements Subscription {
@@ -14,11 +16,13 @@ public class CompositeSubscription<T> implements Subscription {
 
     private final PriorityBlockingQueue<T> queue;
 
-    private List<Subscription> subscriptions = new ArrayList<>();
+    private final List<Subscription> subscriptions = new ArrayList<>();
 
     private final List<SortingSubscriber<T>> subscribers = new ArrayList<>();
 
     private final ConcurrentHashSet<Integer> finished = new ConcurrentHashSet<>();
+
+    private final AtomicBoolean completed = new AtomicBoolean();
 
     volatile long remain = 0;
 
@@ -46,7 +50,8 @@ public class CompositeSubscription<T> implements Subscription {
 
     public void onRequestCompleted0() {
         if (activeSubcribers() == 0) {
-            if (queue.size() > 0) {
+            if (completed.compareAndSet(false, true)) {
+                System.out.println(">xxx> pushqueue ");
                 synchronized (this) {
                     subscribers.get(0).pushQueue(remain, null);
                 }
@@ -62,7 +67,7 @@ public class CompositeSubscription<T> implements Subscription {
 
         assert subscr != null && !subscr.finished();
 
-        System.out.println(">xxx> pushQueue");
+        System.out.println(">xxx> pushQueue :: start");
 
         synchronized (this){
             remain = subscr.pushQueue(remain, comp);
@@ -161,12 +166,13 @@ public class CompositeSubscription<T> implements Subscription {
     }
 
     public void cancel(int idx) {
+        System.out.println(">xxx> onComplete " + idx);
         finished.add(idx);
 
         System.out.println(">xxx> finished " + idx);
 
         if (requestCompleted.get() >= activeSubcribers()) {
-            System.out.println(">xxx> cancel -> onRequestCompleted");
+            System.out.println(">xxx> [" + idx + "] cancel -> onRequestCompleted " + activeSubcribers());
 
             onRequestCompleted0();
         }
