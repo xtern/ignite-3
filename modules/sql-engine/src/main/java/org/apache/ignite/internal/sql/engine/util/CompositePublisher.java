@@ -18,6 +18,7 @@
 package org.apache.ignite.internal.sql.engine.util;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Flow;
@@ -28,47 +29,55 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import org.jetbrains.annotations.Nullable;
 
 public class CompositePublisher<T> implements Flow.Publisher<T> {
-    List<Publisher<T>> publishers = new ArrayList<>();
+    private final Collection<Publisher<T>> publishers = new ArrayList<>();
 
-    CompositeSubscription<T> compSubscription;
+    private final CompositeSubscription<T> compSubscription;
 
-    AtomicBoolean subscribed = new AtomicBoolean();
+    private final AtomicBoolean subscribed = new AtomicBoolean();
 
-    private final Comparator<T> comp;
+    private final boolean ordered;
 
     private final PriorityBlockingQueue<T> queue;
 
-    public CompositePublisher(Comparator<T> comp) {
-        this.comp = comp;
-
+    public CompositePublisher(@Nullable Comparator<T> comp) {
         this.queue = new PriorityBlockingQueue<>(1, comp);
 
         compSubscription = new CompositeSubscription<>(comp, queue);
+        ordered = comp != null;
     }
 
     public void add(Publisher<T> publisher) {
+        if (subscribed.get())
+            throw new IllegalStateException("Cannot add publisher after subscription.");
+
         publishers.add(publisher);
     }
 
     @Override
     public void subscribe(Subscriber<? super T> subscriber) {
-        // todo sync
         if (!subscribed.compareAndSet(false, true)) {
-            throw new IllegalStateException("Support only one subscriber");
+            throw new IllegalStateException("Multiple subscribers are not supported.");
         }
 
-        for (int i = 0; i < publishers.size(); i++) {
-            MagicSubscriber<? super T> subs = new MagicSubscriber<>((Subscriber<T>) subscriber, i, compSubscription, queue);
+        int idx = 0;
 
-            publishers.get(i).subscribe(subs);
-        }
+        for (Publisher<T> publisher : publishers)
+            publisher.subscribe(wrap((Subscriber<T>) subscriber, idx++));
 
         subscriber.onSubscribe(compSubscription);
     }
 
-    private static class MagicSubscriber<T> implements Subscriber<T> {
+    public Subscriber<T> wrap(Subscriber<T> subscriber, int idx) {
+        if (ordered)
+            return new SortingSubscriber<>(subscriber, idx, compSubscription, queue);
+        else
+            return new PlainSubscriber<>(subscriber, compSubscription);
+    }
+
+    private static class SortingSubscriber<T> implements Subscriber<T> {
         private final Subscriber<T> delegate;
 
         private final int idx;
@@ -87,7 +96,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private volatile boolean finished;
 
-        MagicSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
+        SortingSubscriber(Subscriber<T> delegate, int idx, CompositeSubscription<T> compSubscription, PriorityBlockingQueue<T> queue) {
             assert delegate != null;
 
             this.delegate = delegate;
@@ -192,7 +201,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         private List<Subscription> subscriptions = new ArrayList<>();
 
-        private final List<MagicSubscriber<T>> subscribers = new ArrayList<>();
+        private final List<SortingSubscriber<T>> subscribers = new ArrayList<>();
 
 //        int minIdx = 0;
 
@@ -214,7 +223,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
                 List<Integer> minIdxs = selectMinIdx();
 
-                MagicSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
+                SortingSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
 
                 assert subscr != null && !subscr.finished;
 
@@ -254,7 +263,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             List<Integer> minIdxs = new ArrayList<>();
 
             for (int i = 0; i < subscribers.size(); i++) {
-                MagicSubscriber<T> subcriber = subscribers.get(i);
+                SortingSubscriber<T> subcriber = subscribers.get(i);
 
                 if (subcriber == null || subcriber.finished)
                     continue;
@@ -280,7 +289,7 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
             return subscriptions;
         }
 
-        public void add(Subscription subscription, MagicSubscriber<T> subscriber) {
+        public void add(Subscription subscription, SortingSubscriber<T> subscriber) {
             subscriptions.add(subscription);
 
             subscribers.add(subscriber);
@@ -316,6 +325,44 @@ public class CompositePublisher<T> implements Flow.Publisher<T> {
 
         public void subscriptionFinished(int idx) {
             subscriptions.set(idx, null);
+        }
+    }
+
+    private static class PlainSubscriber<T> implements Subscriber<T> {
+        private final Subscriber<T> delegate;
+
+        private final CompositeSubscription<T> compSubscription;
+
+        private final AtomicInteger completed = new AtomicInteger();
+
+        PlainSubscriber(Subscriber<T> delegate, CompositeSubscription<T> compSubscription) {
+            assert delegate != null;
+
+            this.delegate = delegate;
+            this.compSubscription = compSubscription;
+        }
+
+        @Override
+        public void onSubscribe(Subscription subscription) {
+            compSubscription.add(subscription, null);
+        }
+
+        @Override
+        public void onNext(T item) {
+            delegate.onNext(item);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            compSubscription.cancel();
+
+            delegate.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            if (completed.incrementAndGet() == compSubscription.subscriptions().size())
+                delegate.onComplete();
         }
     }
 }

@@ -19,16 +19,21 @@ package org.apache.ignite.internal.sql.engine.exec.rel;
 
 import static org.apache.ignite.internal.util.ArrayUtils.nullOrEmpty;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.Flow;
+import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.Function;
+import java.util.function.IntUnaryOperator;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.ignite.internal.index.SortedIndex;
 import org.apache.ignite.internal.schema.BinaryTuple;
@@ -90,7 +95,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
     private @Nullable BinaryTuple upperBound;
 
-    private Comparator<RowT> cmp;
+    private Comparator<BinaryTuple> cmp;
 
     /**
      * Constructor.
@@ -109,7 +114,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             IgniteIndex schemaIndex,
             InternalIgniteTable schemaTable,
             int[] parts,
-            Comparator<RowT> cmp,
+            @Nullable Comparator<RowT> cmp,
             @Nullable Supplier<RowT> lowerCond,
             @Nullable Supplier<RowT> upperCond,
             @Nullable Predicate<RowT> filters,
@@ -126,6 +131,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
         this.filters = filters;
         this.rowTransformer = rowTransformer;
         this.requiredColumns = requiredColumns;
+        this.cmp = (o1, o2) -> cmp.compare(convert(o1), convert(o2));
 
         factory = ctx.rowHandler().factory(ctx.getTypeFactory(), rowType);
 
@@ -133,7 +139,6 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
         // TODO: create ticket to add flags support
         flags = SortedIndex.INCLUDE_LEFT & SortedIndex.INCLUDE_RIGHT;
-        this.cmp = cmp;
     }
 
     /** {@inheritDoc} */
@@ -242,8 +247,6 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             return;
         }
 
-        System.out.println("request next");
-
         if (waiting == 0) {
             // we must not request rows more than inBufSize
             waiting = inBufSize - inBuff.size();
@@ -266,15 +269,9 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
             return;
         }
 
-        Comparator<BinaryTuple> cmp0 = (o1, o2) -> {
-            return cmp.compare(convert(o1), convert(o2));
-        };
+        CompositePublisher<BinaryTuple> publisher = new CompositePublisher<>(cmp);
 
-        CompositePublisher<BinaryTuple> publisher = new CompositePublisher<>(cmp0);
-
-        for (int curPartIdx = 0; curPartIdx < parts.length; curPartIdx++) {
-
-//        else if (curPartIdx < parts.length) {
+        for (int part : parts) {
             if (schemaIndex.type() == Type.SORTED) {
                 //TODO: https://issues.apache.org/jira/browse/IGNITE-17813
                 // Introduce new publisher using merge-sort algo to merge partition index publishers.
@@ -284,7 +281,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
                 }
 
                 publisher.add(((SortedIndex) schemaIndex.index()).scan(
-                        parts[curPartIdx],
+                        part,
                         context().transaction(),
                         lowerBound,
                         upperBound,
@@ -301,7 +298,7 @@ public class IndexScanNode<RowT> extends AbstractNode<RowT> {
 
                 publisher.add(
                         schemaIndex.index().scan(
-                                parts[curPartIdx],
+                                part,
                                 context().transaction(),
                                 lowerBound,
                                 requiredColumns
