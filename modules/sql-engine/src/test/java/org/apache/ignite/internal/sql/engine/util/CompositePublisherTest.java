@@ -17,16 +17,20 @@
 
 package org.apache.ignite.internal.sql.engine.util;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
@@ -46,6 +50,7 @@ import org.junit.jupiter.api.Test;
 public class CompositePublisherTest {
     static class TestPublisher<T> implements Publisher<T> {
         private final T[] data;
+        Queue<CompletableFuture<?>> futs = new LinkedList<>();
 
         TestPublisher(T[] data) {
             this.data = data;
@@ -56,13 +61,13 @@ public class CompositePublisherTest {
 
             @Override
             public void request(long n) {
-                CompletableFuture.supplyAsync(() -> {
-                    int startIdx = idx.getAndAdd((int)n);
-                    int endIdx = Math.min(startIdx + (int)n, data.length);
+                CompletableFuture<Long> fut = CompletableFuture.supplyAsync(() -> {
+                    int startIdx = idx.getAndAdd((int) n);
+                    int endIdx = Math.min(startIdx + (int) n, data.length);
 
                     T[] subArr = Arrays.copyOfRange(data, startIdx, endIdx);
 
-                    System.out.println(">xxx> push " + Arrays.toString(subArr) + " subscr=" + subscriber);
+                    debug(">xxx> push " + Arrays.toString(subArr) + " subscr=" + subscriber);
 
                     try {
                         for (int n0 = startIdx; n0 < endIdx; n0++) {
@@ -76,22 +81,38 @@ public class CompositePublisherTest {
                         throw t;
                     }
 
-                    System.out.println(">xxx> push " + Arrays.toString(subArr) + " END   subscr=" + subscriber);
+//                    debug(">xxx> push " + Arrays.toString(subArr) + " END   subscr=" + subscriber);
 
                     if (endIdx >= data.length) {
-                        System.out.println(">xxx> onCOmplete " + subscriber);
+                        debug(">xxx> onCOmplete " + subscriber);
                         subscriber.onComplete();
                     } else {
-                        System.out.println("endIdx=" + endIdx + ", data.length=" + data.length);
+                        debug("endIdx=" + endIdx + ", data.length=" + data.length);
                     }
 
                     return n;
                 });
+
+                futs.add(fut);
             }
 
             @Override
             public void cancel() {
                 subscriber.onError(new RuntimeException("cancelled"));
+            }
+        }
+
+        public void waitComplete() {
+            CompletableFuture<?> fut = futs.poll();
+
+            if (fut != null) {
+                try {
+                    fut.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+
+                    throw new RuntimeException(e);
+                }
             }
         }
 
@@ -107,20 +128,11 @@ public class CompositePublisherTest {
 
     @Test
     public void testEnoughData() throws InterruptedException {
-        doTestPublisher(1, 2, 2, true, false);
-
-        doTestPublisher(50, 357, 7, true, false);
+//        doTestPublisher(1, 2, 2, true, false);
+//
+//        doTestPublisher(50, 357, 7, true, false);
         doTestPublisher(50, 357, 7, false, false);
     }
-
-//    @Test
-//    public void testEnoughData() throws InterruptedException {
-//        doTestPublisher(1, 2, 2, true);
-//
-//        doTestPublisher(50, 357, 7, true);
-//        doTestPublisher(50, 357, 7, false);
-//    }
-
 
     @Test
     public void testNotEnoughData() throws InterruptedException {
@@ -163,8 +175,13 @@ public class CompositePublisherTest {
         LinkedBlockingQueue<Integer> res = new LinkedBlockingQueue<>();
         CompositePublisher<Integer> publisher = new CompositePublisher<>(Comparator.comparingInt(v -> v));
 
+        List<TestPublisher<Integer>> publishers = new ArrayList<>();
+
         for (int i = 0; i < threadCnt; i++) {
-            publisher.add(new TestPublisher<>(data[i]));
+            TestPublisher<Integer> pub = new TestPublisher<>(data[i]);
+
+            publishers.add(pub);
+            publisher.add(pub);
         }
 
         AtomicReference<CountDownLatch> finishLatchRef = new AtomicReference<>();
@@ -181,7 +198,7 @@ public class CompositePublisherTest {
 
                 @Override
                 public void onNext(Integer item) {
-                    System.out.println(">[xxx]> " + item);
+                    debug(">[xxx]> " + item);
 
                     res.add(item);
 
@@ -197,7 +214,7 @@ public class CompositePublisherTest {
                 @Override
                 public void onComplete() {
 //                    IgniteUtils.dumpStack(null, ">[xxx]> subscription complete");
-                    System.out.println(">[xxx]> subscription complete");
+                    debug(">[xxx]> subscription complete");
 
                     finishLatchRef.get().countDown();
                     onCompleteCntr.incrementAndGet();
@@ -205,17 +222,29 @@ public class CompositePublisherTest {
         });
 
         if (!split) {
-            validate(expData, 0, totalCnt, requestCnt, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+            checkSubscriptionRequest(expData, 0, totalCnt, requestCnt, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+        }
+         else {
 
-            return;
+            debug("Initial data: " + Arrays.toString(expData));
+
+            for (int off = 0; off < Math.min(requestCnt, totalCnt); off++) {
+                checkSubscriptionRequest(expData, off, totalCnt, 1, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr,
+                        finishLatchRef);
+
+//            for (TestPublisher<Integer> pub : publishers) {
+//                pub.waitComplete();
+//            }
+            }
         }
 
-        for (int off = 0; off < requestCnt; off++) {
-            validate(expData, off, totalCnt, 1, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+        // after test
+        for (TestPublisher<Integer> pub : publishers) {
+            pub.waitComplete();
         }
     }
 
-    private void validate(
+    private void checkSubscriptionRequest(
             int[] data,
             int offset,
             int total,
@@ -227,6 +256,9 @@ public class CompositePublisherTest {
             AtomicInteger onCompleteCntr,
             AtomicReference<CountDownLatch> finishLatchRef
     ) throws InterruptedException {
+        debug(">xxxx> --------------------------------------------------------------------------------");
+        debug(">xxxx> request next [off=" + offset + ", requested=" + requested + ", total=" + total + ']');
+        debug(">xxxx> --------------------------------------------------------------------------------");
         receivedCnt.set(0);
         finishLatchRef.set(new CountDownLatch(1));
         requestedCnt.set(requested);
@@ -238,7 +270,7 @@ public class CompositePublisherTest {
 
         int remaining = total - offset;
         int expReceived = Math.min(requested, remaining);
-        int[] expResult = Arrays.copyOfRange(data, offset, expReceived);
+        int[] expResult = Arrays.copyOfRange(data, offset, offset + expReceived);
 
         Assertions.assertEquals(expReceived, res.size());
         Assertions.assertEquals(expReceived, receivedCnt.get());
@@ -339,17 +371,17 @@ public class CompositePublisherTest {
         }
 
         public synchronized void accept(T o, int idx) {
-//            System.out.println(">xxx> " + Arrays.toString(recentRows) + " v=" + o + " idx = " + idx + ", minIdx = " + minIdx);
+//            debug(">xxx> " + Arrays.toString(recentRows) + " v=" + o + " idx = " + idx + ", minIdx = " + minIdx);
 //            lock.lock();
 //
             try {
                 while (recentRows[idx] != null && idx != minIdx) {
-//                    System.out.println(">xxx> sleep on " + o);
+//                    debug(">xxx> sleep on " + o);
 
                     wait();
                 }
 
-//                System.out.println(">xxx> wake-up " + o);
+//                debug(">xxx> wake-up " + o);
 
                 if (o == null) {
                     finished.add(idx);
@@ -417,7 +449,7 @@ public class CompositePublisherTest {
                 for (int i = 0; i < data.length; i++)
                     consumer.accept(data[i], idx);
 
-//                System.out.println(">xxx> finished " + idx);
+//                debug(">xxx> finished " + idx);
 
                 consumer.accept(null, idx);
             } catch (InterruptedException | BrokenBarrierException e) {
@@ -439,7 +471,7 @@ public class CompositePublisherTest {
         Thread[] threads = new Thread[threadCnt];
         Queue<Object> resQueue = new LinkedBlockingQueue<>();
         MegaAcceptor<Object, Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
-//            System.out.println(">xxx> submit " + v);
+//            debug(">xxx> submit " + v);
 
             resQueue.add(v);
         }, Comparator.comparingInt(v -> v), (t) -> (int)t);
@@ -473,5 +505,12 @@ public class CompositePublisherTest {
 //                .collect(Collectors.toList());
 
         Assertions.assertArrayEquals(data, actData, Arrays.toString(data) + "\n" + Arrays.toString(actData));
+    }
+
+    private static boolean debug = true;
+
+    private static void debug(String msg) {
+        if (debug)
+            System.out.println(msg);
     }
 }

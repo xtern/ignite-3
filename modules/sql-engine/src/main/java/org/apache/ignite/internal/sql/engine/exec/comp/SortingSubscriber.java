@@ -85,19 +85,20 @@ class SortingSubscriber<T> implements Subscriber<T> {
 
     @Override
     public void onComplete() {
-//        if (!finished.compareAndSet(false, true))
+        if (finished.compareAndSet(false, true)) {
 //            throw new IllegalStateException("Second on complete");
-        finished.set(true);
-        remainingCnt.set(0);
+//            finished.set(true);
+            remainingCnt.set(0);
 
-        compSubscription.cancel(idx);
+            compSubscription.cancel(idx);
+        }
         // last submitter will choose what to do next
 //            compSubscription.onRequestCompleted();
 
-//            System.out.println(">xxx> complete " + idx);
+//            debug(">xxx> complete " + idx);
         // todo sync properly
 //            if (complete()) {
-////                System.out.println(">xxx> completed");
+////                debug(">xxx> completed");
 //                delegate.onComplete();
 //            }
     }
@@ -113,7 +114,18 @@ class SortingSubscriber<T> implements Subscriber<T> {
 //        assert lastItem != null;
 
         while (remain > 0 && (r = queue.peek()) != null) {
-            boolean same = comp != null && comp.compare(lastItem, r) == 0;
+            int cmpRes = comp == null ? 0 : comp.compare(lastItem, r);
+//            if (comp != null) {
+//
+//
+//            debug(">xxx> lastItem=" + lastItem + " r=" + r + " res = " + cmpRes);
+            if (cmpRes < 0) {
+
+                return remain;
+            }
+//            }
+
+            boolean same = comp != null && cmpRes == 0;
 
             if (!done && same) {
                 done = true;
@@ -130,10 +142,17 @@ class SortingSubscriber<T> implements Subscriber<T> {
             }
         }
 
-        if (comp == null) {
+        if (comp == null && queue.isEmpty()) {
             delegate.onComplete();
         }
 
         return remain;
+    }
+
+    private static boolean debug = true;
+
+    private static void debug(String msg) {
+        if (debug)
+            debug(msg);
     }
 }
