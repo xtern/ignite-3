@@ -18,6 +18,7 @@
 package org.apache.ignite.internal.sql.engine.util;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Queue;
@@ -32,6 +33,7 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -167,11 +169,11 @@ public class CompositePublisherTest {
             publisher.add(new TestPublisher<>(data[i]));
         }
 
-        CountDownLatch finishLatch = new CountDownLatch(1);
-        AtomicLong receivedCnt = new AtomicLong();
+        AtomicReference<CountDownLatch> finishLatchRef = new AtomicReference<>();
+        AtomicInteger receivedCnt = new AtomicInteger();
         AtomicInteger onCompleteCntr = new AtomicInteger();
-
         AtomicReference<Subscription> subscriptionRef =new AtomicReference<>();
+        AtomicReference<Integer> requested = new AtomicReference<>();
 
         publisher.subscribe(new Subscriber<>() {
                 @Override
@@ -185,8 +187,8 @@ public class CompositePublisherTest {
 
                     res.add(item);
 
-                    if (receivedCnt.incrementAndGet() == requestCnt)
-                        finishLatch.countDown();
+                    if (receivedCnt.incrementAndGet() == requested.get())
+                        finishLatchRef.get().countDown();
                 }
 
                 @Override
@@ -199,30 +201,41 @@ public class CompositePublisherTest {
 //                    IgniteUtils.dumpStack(null, ">[xxx]> subscription complete");
                     System.out.println(">[xxx]> subscription complete");
 
-                    finishLatch.countDown();
+                    finishLatchRef.get().countDown();
                     onCompleteCntr.incrementAndGet();
                 }
         });
 
-        subscriptionRef.get().request(requestCnt);
+//        subscriptionRef.get().request(requestCnt);
 
-        Assertions.assertTrue(finishLatch.await(10, TimeUnit.SECONDS), "Execution timeout");
+        validate(expData, 0, totalCnt, requestCnt, requested, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+    }
 
-        expData = Arrays.copyOf(expData, requestCnt);
+    private void validate(int[] data, int offset, int total, int requested, AtomicReference<Integer> requestedCnt,
+            Subscription subscription, Collection<Integer> res,
+            AtomicInteger receivedCnt, AtomicInteger onCompleteCntr, AtomicReference<CountDownLatch> finishLatchRef) throws InterruptedException {
+        receivedCnt.set(0);
+        finishLatchRef.set(new CountDownLatch(1));
+        requestedCnt.set(requested);
 
-        int expReceived = Math.min(requestCnt, totalCnt);
+        subscription.request(requested);
+
+        Assertions.assertTrue(finishLatchRef.get().await(10, TimeUnit.SECONDS), "Execution timeout");
+
+        int remaining = total - offset;
+        int expReceived = Math.min(requested, remaining);
+        int[] expResult = Arrays.copyOfRange(data, offset, expReceived);
 
         Assertions.assertEquals(expReceived, res.size());
         Assertions.assertEquals(expReceived, receivedCnt.get());
 
-
-        int expCnt = requestCnt >= totalCnt ? 1 : 0;
+        int expCnt = offset + requested >= total ? 1 : 0;
         IgniteTestUtils.waitForCondition(() -> onCompleteCntr.get() == expCnt, 10_000);;
         Assertions.assertEquals(expCnt, onCompleteCntr.get());
 
-        int[] resArr = new int[requestCnt];
+        int[] resArr = new int[expReceived];
 
-        k = 0;
+        int k = 0;
 
         for (Integer n : res) {
             if (resArr.length == k)
@@ -231,48 +244,7 @@ public class CompositePublisherTest {
             resArr[k++] = n;
         }
 
-        Assertions.assertArrayEquals(expData, resArr, "\n" + Arrays.toString(expData) + "\n" + Arrays.toString(resArr) + "\n");
-
-//        if (true)
-//            return;
-//
-//        Thread[] threads = new Thread[threadCnt];
-//        Queue<Object> resQueue = new LinkedBlockingQueue<>();
-//        MegaAcceptor<Object, Integer> acceptor = new MegaAcceptor<>(threadCnt, v -> {
-////            System.out.println(">xxx> submit " + v);
-//
-//            resQueue.add(v);
-//        }, Comparator.comparingInt(v -> v), (t) -> (int)t);
-//
-//        CyclicBarrier startBarrier = new CyclicBarrier(threadCnt);
-//
-//        for (int n = 0; n < threadCnt; n++) {
-//            int[] arrCp = Arrays.copyOfRange(data, n * dataCnt, (n + 1) * dataCnt);
-//
-//            Arrays.sort(arrCp);
-//
-//            threads[n] = new Thread(new TestDataStreamer(startBarrier, n, arrCp, acceptor));
-//        }
-//
-//        for (int n = 0; n < threadCnt; n++)
-//            threads[n].start();
-//
-//        for (int n = 0; n < threadCnt; n++)
-//            threads[n].join();
-//
-//        Arrays.sort(data);
-//
-//        int[] actData = new int[data.length];
-//        int cnt = 0;
-//        for (Object obj : resQueue) {
-//            actData[cnt++] = (int)obj;
-//        }
-
-//        List<Integer> expList = Arrays.stream(data)
-//                .boxed()
-//                .collect(Collectors.toList());
-
-//        Assertions.assertArrayEquals(data, actData, Arrays.toString(data) + "\n" + Arrays.toString(actData));
+        Assertions.assertArrayEquals(expResult, resArr, "\n" + Arrays.toString(expResult) + "\n" + Arrays.toString(resArr) + "\n");
     }
 
     static class MegaAcceptor<T, R> {
