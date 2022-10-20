@@ -33,9 +33,7 @@ import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -109,10 +107,10 @@ public class CompositePublisherTest {
 
     @Test
     public void testEnoughData() throws InterruptedException {
-        doTestPublisher(1, 2, 2, true);
+        doTestPublisher(1, 2, 2, true, false);
 
-        doTestPublisher(50, 357, 7, true);
-        doTestPublisher(50, 357, 7, false);
+        doTestPublisher(50, 357, 7, true, false);
+        doTestPublisher(50, 357, 7, false, false);
     }
 
 //    @Test
@@ -126,25 +124,25 @@ public class CompositePublisherTest {
 
     @Test
     public void testNotEnoughData() throws InterruptedException {
-        doTestPublisher(1, 0, 2, true);
+        doTestPublisher(1, 0, 2, true, false);
 
-        doTestPublisher(100, 70, 7, true);
-        doTestPublisher(100, 70, 7, false);
+        doTestPublisher(100, 70, 7, true, false);
+        doTestPublisher(100, 70, 7, false, false);
+    }
 
+    @Test
+    public void testMultipleRequest() throws InterruptedException {
+        doTestPublisher(100, 70, 7, true, true);
+        doTestPublisher(100, 70, 7, false, true);
     }
 
     @Test
     public void testExactEnoughData() throws InterruptedException {
-        doTestPublisher(30, 30, 3, true);
-        doTestPublisher(30, 30, 3, false);
+        doTestPublisher(30, 30, 3, true, false);
+        doTestPublisher(30, 30, 3, false, false);
     }
 
     public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt, boolean random, boolean split) throws InterruptedException {
-
-    }
-
-//    @Test
-    public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt, boolean random) throws InterruptedException {
         int dataCnt = totalCnt / threadCnt;
         Integer[][] data = new Integer[threadCnt][dataCnt];
         int[] expData = new int[totalCnt];
@@ -173,7 +171,7 @@ public class CompositePublisherTest {
         AtomicInteger receivedCnt = new AtomicInteger();
         AtomicInteger onCompleteCntr = new AtomicInteger();
         AtomicReference<Subscription> subscriptionRef =new AtomicReference<>();
-        AtomicReference<Integer> requested = new AtomicReference<>();
+        AtomicReference<Integer> requestedСте = new AtomicReference<>();
 
         publisher.subscribe(new Subscriber<>() {
                 @Override
@@ -187,7 +185,7 @@ public class CompositePublisherTest {
 
                     res.add(item);
 
-                    if (receivedCnt.incrementAndGet() == requested.get())
+                    if (receivedCnt.incrementAndGet() == requestedСте.get())
                         finishLatchRef.get().countDown();
                 }
 
@@ -206,17 +204,33 @@ public class CompositePublisherTest {
                 }
         });
 
-//        subscriptionRef.get().request(requestCnt);
+        if (!split) {
+            validate(expData, 0, totalCnt, requestCnt, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
 
-        validate(expData, 0, totalCnt, requestCnt, requested, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+            return;
+        }
+
+        for (int off = 0; off < requestCnt; off++) {
+            validate(expData, off, totalCnt, 1, requestedСте, subscriptionRef.get(), res, receivedCnt, onCompleteCntr, finishLatchRef);
+        }
     }
 
-    private void validate(int[] data, int offset, int total, int requested, AtomicReference<Integer> requestedCnt,
-            Subscription subscription, Collection<Integer> res,
-            AtomicInteger receivedCnt, AtomicInteger onCompleteCntr, AtomicReference<CountDownLatch> finishLatchRef) throws InterruptedException {
+    private void validate(
+            int[] data,
+            int offset,
+            int total,
+            int requested,
+            AtomicReference<Integer> requestedCnt,
+            Subscription subscription,
+            Collection<Integer> res,
+            AtomicInteger receivedCnt,
+            AtomicInteger onCompleteCntr,
+            AtomicReference<CountDownLatch> finishLatchRef
+    ) throws InterruptedException {
         receivedCnt.set(0);
         finishLatchRef.set(new CountDownLatch(1));
         requestedCnt.set(requested);
+        res.clear();
 
         subscription.request(requested);
 
@@ -230,7 +244,8 @@ public class CompositePublisherTest {
         Assertions.assertEquals(expReceived, receivedCnt.get());
 
         int expCnt = offset + requested >= total ? 1 : 0;
-        IgniteTestUtils.waitForCondition(() -> onCompleteCntr.get() == expCnt, 10_000);;
+        IgniteTestUtils.waitForCondition(() -> onCompleteCntr.get() == expCnt, 10_000);
+
         Assertions.assertEquals(expCnt, onCompleteCntr.get());
 
         int[] resArr = new int[expReceived];
@@ -238,8 +253,9 @@ public class CompositePublisherTest {
         int k = 0;
 
         for (Integer n : res) {
-            if (resArr.length == k)
-                break;
+//            if (resArr.length == k) {
+//                break;
+//            }
 
             resArr[k++] = n;
         }
