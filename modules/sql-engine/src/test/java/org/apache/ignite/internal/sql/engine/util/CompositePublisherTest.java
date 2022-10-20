@@ -34,6 +34,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -112,6 +113,15 @@ public class CompositePublisherTest {
         doTestPublisher(50, 357, 7, false);
     }
 
+//    @Test
+//    public void testEnoughData() throws InterruptedException {
+//        doTestPublisher(1, 2, 2, true);
+//
+//        doTestPublisher(50, 357, 7, true);
+//        doTestPublisher(50, 357, 7, false);
+//    }
+
+
     @Test
     public void testNotEnoughData() throws InterruptedException {
         doTestPublisher(1, 0, 2, true);
@@ -125,6 +135,10 @@ public class CompositePublisherTest {
     public void testExactEnoughData() throws InterruptedException {
         doTestPublisher(30, 30, 3, true);
         doTestPublisher(30, 30, 3, false);
+    }
+
+    public void doTestPublisher(int requestCnt, int totalCnt, int threadCnt, boolean random, boolean split) throws InterruptedException {
+
     }
 
 //    @Test
@@ -157,10 +171,12 @@ public class CompositePublisherTest {
         AtomicLong receivedCnt = new AtomicLong();
         AtomicInteger onCompleteCntr = new AtomicInteger();
 
+        AtomicReference<Subscription> subscriptionRef =new AtomicReference<>();
+
         publisher.subscribe(new Subscriber<>() {
                 @Override
                 public void onSubscribe(Subscription subscription) {
-                    subscription.request(requestCnt);
+                    subscriptionRef.set(subscription);
                 }
 
                 @Override
@@ -187,6 +203,8 @@ public class CompositePublisherTest {
                     onCompleteCntr.incrementAndGet();
                 }
         });
+
+        subscriptionRef.get().request(requestCnt);
 
         Assertions.assertTrue(finishLatch.await(10, TimeUnit.SECONDS), "Execution timeout");
 

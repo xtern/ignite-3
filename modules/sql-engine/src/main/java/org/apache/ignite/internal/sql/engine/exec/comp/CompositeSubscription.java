@@ -172,10 +172,10 @@ public class CompositeSubscription<T> implements Subscription {
         }
     }
 
-    public void cancel(int idx) {
+    public synchronized void cancel(int idx) {
         System.out.println(">xxx> onComplete " + idx);
         finished.add(idx);
-        if (finishedCnt.incrementAndGet() == subscriptions.size()) {
+        if (finishedCnt.incrementAndGet() == subscriptions.size() && (remain > 0 || queue.size() == 0)) {
             if (completed.compareAndSet(false, true)) {
                 System.out.println(">xxx> push queue, remain=" + remain + " queue=" + queue.size());
                 synchronized (this) {
