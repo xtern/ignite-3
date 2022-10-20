@@ -3,6 +3,7 @@ package org.apache.ignite.internal.sql.engine.exec.comp;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -22,13 +23,16 @@ public class CompositeSubscription<T> implements Subscription {
 
     private final ConcurrentHashSet<Integer> finished = new ConcurrentHashSet<>();
 
+    private final AtomicInteger finishedCnt = new AtomicInteger();
+
     private final AtomicBoolean completed = new AtomicBoolean();
 
     volatile long remain = 0;
 
     volatile long requested = 0;
 
-    private final AtomicInteger requestCompleted = new AtomicInteger();
+//    private final AtomicInteger requestCompleted = new AtomicInteger();
+    private final Set<Integer> waitResponse = new ConcurrentHashSet<>();
 
     CompositeSubscription(Comparator<T> comp, PriorityBlockingQueue<T> queue) {
         this.comp = comp;
@@ -39,35 +43,28 @@ public class CompositeSubscription<T> implements Subscription {
         return subscriptions.size() - finished.size();
     }
 
-    public void onRequestCompleted() {
+    public boolean onRequestCompleted(int idx) {
         // Internal buffers has been filled.
-        if (requestCompleted.incrementAndGet() >= activeSubcribers()) {
-            System.out.println(">xxx> reqs=" + requestCompleted.get() + ", subs=" + subscriptions.size() + ", finished=" + finished.size());
-
+        if (waitResponse.remove(idx) && waitResponse.isEmpty()) {
             onRequestCompleted0();
+
+            return true;
         } else {
-            System.out.println(">xxx> waiting " + (subscriptions.size() - activeSubcribers()));
+            System.out.println(">xxx> waiting " + waitResponse.size());
         }
+
+        return false;
     }
 
     public void onRequestCompleted0() {
-        if (activeSubcribers() == 0) {
-            if (completed.compareAndSet(false, true)) {
-                System.out.println(">xxx> pushqueue ");
-                synchronized (this) {
-                    subscribers.get(0).pushQueue(remain, null);
-                }
-            }
-
-            // all work done
-            return;
-        }
-
         List<Integer> minIdxs = selectMinIdx();
+
+        if (minIdxs.isEmpty())
+            return;
 
         SortingSubscriber<T> subscr = subscribers.get(minIdxs.get(0));
 
-        assert subscr != null && !subscr.finished();
+//        assert subscr != null && !subscr.finished();
 
         System.out.println(">xxx> pushQueue :: start");
 
@@ -81,7 +78,7 @@ public class CompositeSubscription<T> implements Subscription {
             long dataAmount = Math.max(1, requested / subscriptions.size());
 
             for (Integer idx : minIdxs) {
-                requestCompleted.decrementAndGet();
+                waitResponse.add(idx);
 
                 subscribers.get(idx).onDataRequested(dataAmount);
             }
@@ -122,10 +119,6 @@ public class CompositeSubscription<T> implements Subscription {
             }
         }
 
-        if (minIdxs.isEmpty()) {
-            new IllegalStateException("minIdx is empty").printStackTrace();
-        }
-
         return minIdxs;
     }
 
@@ -149,12 +142,24 @@ public class CompositeSubscription<T> implements Subscription {
         remain = n;
         requested = n;
 
-        requestCompleted.set(0);
+        waitResponse.clear();
 
         long requestCnt = Math.max(1, n / subscriptions.size());
 
         for (int i = 0; i < subscriptions.size(); i++) {
-            subscribers.get(i).onDataRequested(requestCnt);
+            SortingSubscriber<T> subscriber = subscribers.get(i);
+
+            if (subscriber.finished())
+                continue;
+
+            waitResponse.add(i);
+            subscriber.onDataRequested(requestCnt);
+        }
+
+        for (int i = 0; i< subscriptions.size(); i++) {
+            if (subscribers.get(i).finished())
+                continue;
+
             subscriptions.get(i).request(requestCnt);
         }
     }
@@ -170,16 +175,29 @@ public class CompositeSubscription<T> implements Subscription {
     public void cancel(int idx) {
         System.out.println(">xxx> onComplete " + idx);
         finished.add(idx);
+        if (finishedCnt.incrementAndGet() == subscriptions.size()) {
+            if (completed.compareAndSet(false, true)) {
+                System.out.println(">xxx> push queue, remain=" + remain + " queue=" + queue.size());
+                synchronized (this) {
+                    subscribers.get(0).pushQueue(remain, null);
+                }
+            }
+
+            // all work done
+            return;
+        }
+
+        onRequestCompleted(idx);
 
         System.out.println(">xxx> finished " + idx);
 
-        if (requestCompleted.get() >= activeSubcribers()) {
-            System.out.println(">xxx> [" + idx + "] cancel -> onRequestCompleted " + activeSubcribers());
-
-            onRequestCompleted0();
-        }
-        else {
-            System.out.println(">xxx> still waiting completed=" + requestCompleted.get() + ", actie =" + activeSubcribers());
-        }
+//        if (requestCompleted.get() >= activeSubcribers()) {
+//            System.out.println(">xxx> [" + idx + "] cancel -> onRequestCompleted " + activeSubcribers());
+//
+//            onRequestCompleted0();
+//        }
+//        else {
+//            System.out.println(">xxx> still waiting completed=" + requestCompleted.get() + ", actie =" + activeSubcribers());
+//        }
     }
 }

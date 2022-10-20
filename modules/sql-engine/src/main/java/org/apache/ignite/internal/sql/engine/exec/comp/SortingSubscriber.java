@@ -58,10 +58,10 @@ class SortingSubscriber<T> implements Subscriber<T> {
 
         if (remainingCnt.decrementAndGet() <= 0) {
             if (remainingCnt.get() != 0) {
-                throw new IllegalStateException("!!!!remaining failed");
+                throw new IllegalStateException("!!!!remaining failed " + remainingCnt.get());
             }
 
-            compSubscription.onRequestCompleted();
+            compSubscription.onRequestCompleted(idx);
         }
     }
 
@@ -76,6 +76,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
     }
 
     public void onDataRequested(long n) {
+        // todo add assertion?
         if (finished.get())
             return;
 
@@ -109,7 +110,7 @@ class SortingSubscriber<T> implements Subscriber<T> {
 //        if (remain == 0 || queue.isEmpty())
 //            return 0;
 
-        assert lastItem != null;
+//        assert lastItem != null;
 
         while (remain > 0 && (r = queue.peek()) != null) {
             boolean same = comp != null && comp.compare(lastItem, r) == 0;

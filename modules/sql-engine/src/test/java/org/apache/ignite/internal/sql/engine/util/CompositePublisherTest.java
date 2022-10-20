@@ -123,7 +123,7 @@ public class CompositePublisherTest {
 
     @Test
     public void testExactEnoughData() throws InterruptedException {
-//        doTestPublisher(30, 30, 3, true);
+        doTestPublisher(30, 30, 3, true);
         doTestPublisher(30, 30, 3, false);
     }
 
