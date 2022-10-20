@@ -63,8 +63,16 @@ public class CompositePublisherTest {
 
                     System.out.println(">xxx> push " + Arrays.toString(subArr) + " subscr=" + subscriber);
 
-                    for (int n0 = startIdx; n0 < endIdx; n0++) {
-                        subscriber.onNext(data[n0]);
+                    try {
+                        for (int n0 = startIdx; n0 < endIdx; n0++) {
+                            subscriber.onNext(data[n0]);
+                        }
+                    } catch (Throwable t) {
+                        System.err.println("-------------");
+                        t.printStackTrace();
+                        System.err.println("-------------");
+
+                        throw t;
                     }
 
                     System.out.println(">xxx> push " + Arrays.toString(subArr) + " END   subscr=" + subscriber);

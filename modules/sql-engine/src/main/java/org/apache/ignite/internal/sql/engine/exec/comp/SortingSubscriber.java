@@ -109,6 +109,8 @@ class SortingSubscriber<T> implements Subscriber<T> {
 //        if (remain == 0 || queue.isEmpty())
 //            return 0;
 
+        assert lastItem != null;
+
         while (remain > 0 && (r = queue.peek()) != null) {
             boolean same = comp != null && comp.compare(lastItem, r) == 0;
 

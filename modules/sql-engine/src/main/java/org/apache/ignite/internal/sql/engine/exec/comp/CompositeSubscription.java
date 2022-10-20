@@ -42,6 +42,8 @@ public class CompositeSubscription<T> implements Subscription {
     public void onRequestCompleted() {
         // Internal buffers has been filled.
         if (requestCompleted.incrementAndGet() >= activeSubcribers()) {
+            System.out.println(">xxx> reqs=" + requestCompleted.get() + ", subs=" + subscriptions.size() + ", finished=" + finished.size());
+
             onRequestCompleted0();
         } else {
             System.out.println(">xxx> waiting " + (subscriptions.size() - activeSubcribers()));
@@ -69,7 +71,7 @@ public class CompositeSubscription<T> implements Subscription {
 
         System.out.println(">xxx> pushQueue :: start");
 
-        synchronized (this){
+        synchronized (this) {
             remain = subscr.pushQueue(remain, comp);
         }
 
